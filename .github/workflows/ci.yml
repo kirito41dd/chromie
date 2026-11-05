@@ -29,6 +29,10 @@ jobs:
           persist-credentials: false
       - name: 准备已固定的 Rust 工具链
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - name: 准备 Slint 原生检查环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev
       - name: 检查正式目标
         run: |
           cargo fmt --all --check
