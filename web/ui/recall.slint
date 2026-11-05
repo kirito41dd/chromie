@@ -1,0 +1,122 @@
+import { SelectableText, SelectableArea } from "selectable-text.slint";
+import { Theme, InputField, ActionButton } from "common.slint";
+import { RecallRow, RecallStage, RecallOverview } from "recall-models.slint";
+import { RecallResult } from "recall-card.slint";
+import { RecallProcess } from "recall-process.slint";
+
+component EmptyResults inherits Rectangle {
+    in property <bool> initial;
+    height: 232px; background: Theme.paper;
+    border-radius: 14px; border-width: 1px; border-color: Theme.border;
+    VerticalLayout {
+        padding: 24px; spacing: 12px; alignment: center;
+        Text { text: root.initial ? "查找已保存的记忆" : "没有匹配的记忆"; color: Theme.ink; font-size: 19px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
+        Text { text: root.initial ? "输入项目、服务名称或具体问题。" : "试试更具体的描述，或查看本次检索过程。"; color: Theme.secondary; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
+    }
+}
+
+export component RecallColumns inherits Rectangle {
+    callback show-secret(string, string);
+    min-width: 0px; max-width: 100000px; preferred-width: 1160px;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    in property <bool> wide;
+    in property <[RecallRow]> results;
+    in property <RecallOverview> overview;
+    in property <[RecallStage]> stages;
+    out property <length> result-width: result-column.width;
+    HorizontalLayout {
+        spacing: root.wide ? 24px : 0px; cross-axis-alignment: start;
+        result-column := VerticalLayout {
+            width: max(0px, root.width - (root.wide ? 344px : 0px));
+            spacing: 16px; alignment: start;
+            if root.results.length == 0: EmptyResults { initial: false; }
+            for memory in root.results: RecallResult { memory: memory; show-secret(id, label) => { root.show-secret(id, label); } }
+            if !root.wide: RecallProcess { overview: root.overview; stages: root.stages; }
+        }
+        if root.wide: RecallProcess { width: 320px; overview: root.overview; stages: root.stages; }
+    }
+}
+
+export component RecallPage inherits Rectangle {
+    callback show-secret(string, string);
+    min-width: 0px; max-width: 100000px; preferred-width: 1160px;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    in property <bool> compact;
+    private property <bool> wide: root.width >= 968px;
+    in-out property <string> recall-query;
+    in property <bool> recall-loading;
+    in property <bool> recall-done;
+    in property <string> recall-note;
+    in property <string> recall-error;
+    in property <[RecallRow]> recall-results;
+    in property <RecallOverview> overview;
+    in property <[RecallStage]> stages;
+    in-out property <bool> debug-open: false;
+    in property <string> debug-meta;
+    in property <string> debug-request;
+    in property <string> debug-response;
+    out property <length> content-height: layout.preferred-height;
+    callback recall;
+    callback clear-recall;
+    callback recall-edited;
+
+    layout := VerticalLayout {
+        spacing: 24px; alignment: start;
+        Rectangle {
+            height: search-layout.preferred-height;
+            background: Theme.paper; border-radius: 16px;
+            border-width: 1px; border-color: Theme.border;
+            search-layout := VerticalLayout {
+                padding: root.compact ? 18px : 24px; spacing: 12px;
+                Text { text: "搜索记忆"; color: Theme.ink; font-size: 15px; font-weight: 600; }
+                HorizontalLayout {
+                    height: 48px; spacing: 10px;
+                    InputField {
+                        min-width: 0px; horizontal-stretch: 1;
+                        value <=> root.recall-query; hint: "输入关键词或自然问题";
+                        accepted => { root.recall(); }
+                        edited => { root.recall-edited(); }
+                    }
+                    ActionButton { label: root.recall-loading ? "搜索中…" : "搜索"; disabled: root.recall-loading; activated => { root.recall(); } }
+                }
+                Text { text: "当前空间 · 已保存记忆 · 启用模型后自动结合语义召回"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+            }
+        }
+        if !root.recall-done: EmptyResults { initial: true; }
+        if root.recall-loading: Text { text: "正在查找记忆…"; color: Theme.secondary; font-size: 14px; }
+        if root.recall-error != "": SelectableText { text: root.recall-error; text-color: #a13b33; font-size: 14px; wrap: word-wrap; }
+        if root.recall-done && !root.recall-loading && root.recall-error == "": VerticalLayout {
+            spacing: 18px;
+            HorizontalLayout {
+                height: 44px; spacing: 12px; cross-axis-alignment: center;
+                Text { min-width: 0px; horizontal-stretch: 1; text: "找到 " + root.recall-results.length + " 条记忆"; color: Theme.ink; font-size: root.compact ? 17px : 21px; font-weight: 600; overflow: elide; }
+                ActionButton { label: "清空"; subtle: true; activated => { root.clear-recall(); } }
+            }
+            if root.recall-note != "": Rectangle {
+                height: note.preferred-height + 28px;
+                background: root.overview.limited ? #fff5e5 : #efecff; border-radius: 10px;
+                note := SelectableText { x: 16px; y: 14px; width: parent.width - 32px; height: self.preferred-height;
+                    text: root.recall-note; text-color: root.overview.limited ? #8b601f : #5747bd; font-size: 12px; wrap: word-wrap; }
+            }
+            RecallColumns { wide: root.wide; results: root.recall-results; overview: root.overview; stages: root.stages; show-secret(id, label) => { root.show-secret(id, label); } }
+        }
+        if root.debug-request != "" || root.debug-response != "": VerticalLayout {
+            spacing: 16px;
+            Rectangle { height: 1px; background: Theme.border; }
+            HorizontalLayout {
+                spacing: 12px;
+                ActionButton { width: 164px; label: root.debug-open ? "收起开发者详情" : "开发者详情"; subtle: true; activated => { root.debug-open = !root.debug-open; } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if root.debug-open: VerticalLayout {
+                spacing: 14px;
+                SelectableText { text: root.debug-meta; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+                if root.overview.has-diagnostics: SelectableText { text: "索引配置 " + root.overview.index-config + "\n兜底空白切分条件 " + root.overview.fallback-terms + "\nQdrant 未返回实际分词明细。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                Text { text: "请求参数"; color: Theme.ink; font-size: 13px; font-weight: 600; }
+                SelectableArea { text: root.debug-request; code: true; wrap: word-wrap; height: 180px; font-size: 12px; }
+                Text { text: "原始响应"; color: Theme.ink; font-size: 13px; font-weight: 600; }
+                SelectableArea { text: root.debug-response; code: true; wrap: word-wrap; height: 360px; font-size: 12px; }
+            }
+        }
+    }
+}

@@ -1,0 +1,69 @@
+import { Theme } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct UsageTotal { tokens: string, requests: string }
+export struct UsageDay { date: string, model: string, tokens: string, requests: string, note: string }
+
+component UsageMetric inherits Rectangle {
+    in property <string> label;
+    in property <UsageTotal> total;
+    min-width: 0px;
+    height: 90px;
+    background: transparent;
+    VerticalLayout {
+        spacing: 6px;
+        SelectableText { text: root.label; font-size: 12px; text-color: Theme.secondary; }
+        SelectableText { text: root.total.tokens; font-size: 23px; font-weight: 600; text-color: Theme.ink; }
+        SelectableText { text: root.total.requests; font-size: 12px; text-color: Theme.muted; }
+    }
+}
+
+export component ModelUsage inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> available;
+    in property <UsageTotal> today;
+    in property <UsageTotal> week;
+    in property <UsageTotal> total;
+    in property <string> note;
+    in property <[UsageDay]> days;
+    min-width: 0px;
+    height: layout.preferred-height;
+    background: Theme.paper; border-width: 1px; border-color: Theme.border; border-radius: 12px;
+    layout := VerticalLayout {
+        padding: root.compact ? 18px : 24px; spacing: 18px;
+        HorizontalLayout {
+            SelectableText { text: "模型用量"; font-size: 18px; font-weight: 600; text-color: Theme.ink; }
+            Rectangle { horizontal-stretch: 1; }
+            SelectableText { text: "UTC 自然日"; font-size: 11px; text-color: Theme.muted; }
+        }
+        if !root.available: SelectableText { text: "用量暂时无法读取，不影响模型与检索。"; font-size: 13px; text-color: Theme.secondary; wrap: word-wrap; }
+        if root.available: VerticalLayout {
+            spacing: 16px;
+            if !root.compact: HorizontalLayout {
+                spacing: 24px;
+                UsageMetric { label: "今日 Token"; total: root.today; }
+                UsageMetric { label: "近 7 日 Token"; total: root.week; }
+                UsageMetric { label: "累计 Token"; total: root.total; }
+            }
+            if root.compact: VerticalLayout {
+                spacing: 16px;
+                UsageMetric { label: "今日 Token"; total: root.today; }
+                UsageMetric { label: "近 7 日 Token"; total: root.week; }
+                UsageMetric { label: "累计 Token"; total: root.total; }
+            }
+            SelectableText { text: root.note; font-size: 12px; text-color: Theme.secondary; wrap: word-wrap; }
+            if root.days.length > 0: SelectableText { text: "最近 7 日 · 每模型每天一行"; font-size: 12px; text-color: Theme.muted; }
+            for day in root.days: Rectangle {
+                height: row.preferred-height;
+                background: transparent;
+                row := VerticalLayout {
+                    spacing: 7px; padding-top: 12px; padding-bottom: 4px;
+                    Rectangle { height: 1px; background: Theme.border; }
+                    SelectableText { text: day.date + "  ·  " + day.model; font-size: 13px; text-color: Theme.ink; wrap: word-wrap; }
+                    SelectableText { text: day.tokens + " tokens  ·  " + day.requests; font-size: 13px; text-color: Theme.accent; wrap: word-wrap; }
+                    if day.note != "": SelectableText { text: day.note; font-size: 11px; text-color: Theme.muted; wrap: word-wrap; }
+                }
+            }
+        }
+    }
+}

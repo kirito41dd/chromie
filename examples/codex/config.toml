@@ -1,0 +1,10 @@
+# 合并到现有配置；将 SPACE_SLUG 换为短空间标识。
+# 在 Web 的“接入”页创建 Agent；此环境变量仅保存该接入的 MCP 密钥。
+[mcp_servers.chromie]
+url = "http://127.0.0.1:8732/spaces/SPACE_SLUG/mcp"
+bearer_token_env_var = "CHROMIE_MCP_KEY"
+startup_timeout_sec = 20
+tool_timeout_sec = 30
+# 也可移除 bearer_token_env_var，使用用户级本机配置：
+# http_headers = { Authorization = "Bearer 填入MCP密钥" }
+# 空间密码不能用于 MCP；不要提交含真实密钥的配置。

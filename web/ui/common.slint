@@ -1,0 +1,155 @@
+import { SelectableInput, PointerArea } from "selectable-text.slint";
+export struct MemoryRow {
+    memory-id: string,
+    is-secret: bool,
+    secret-stored: bool,
+    secret-status: string,
+    content: string,
+    preview: string,
+    scope: string,
+    time: string,
+    detail: string,
+    agent-name: string,
+    usage: string,
+    usage-detail: string,
+    pending: bool,
+}
+
+export global Theme {
+    out property <color> canvas: #f7f7fc;
+    out property <color> paper: #ffffff;
+    out property <color> ink: #252542;
+    out property <color> secondary: #5c5d78;
+    out property <color> muted: #6b6b85;
+    out property <color> border: #e5e5f2;
+    out property <color> accent: #6d5ef7;
+    out property <color> green: #129a83;
+    out property <color> danger: #bc303b;
+    out property <color> danger-hover: #a12631;
+    out property <color> danger-soft: #fff2f3;
+    out property <color> danger-border: #edc7cc;
+}
+
+export component SecretBadge inherits Rectangle {
+    width: 78px; height: 24px;
+    out property <length> icon-center-y: lock-icon.y + lock-icon.height / 2;
+    out property <length> label-center-y: label.y + label.height / 2;
+    border-radius: 6px; background: #e5f6f0;
+    accessible-role: text; accessible-label: "Secret 加密凭据";
+    HorizontalLayout {
+        alignment: center; cross-axis-alignment: center; spacing: 5px;
+        lock-icon := Image { source: @image-url("lock.svg"); width: 14px; height: 14px; image-fit: contain; }
+        label := Text { text: "Secret"; color: #087f69; font-size: 11px; font-weight: 600; vertical-alignment: center; }
+    }
+}
+
+export component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> subtle: false;
+    in property <bool> danger: false;
+    in property <bool> disabled: false;
+    callback activated;
+    out property <bool> focused: keyboard.has-focus;
+    forward-focus: keyboard;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { if !root.disabled { root.activated(); } }
+    height: 44px;
+    min-width: 88px;
+    horizontal-stretch: 0;
+    border-radius: 9px;
+    border-width: keyboard.has-focus ? 2px : 1px;
+    border-color: root.danger ? (keyboard.has-focus || !root.subtle ? Theme.danger : Theme.danger-border) : (keyboard.has-focus ? #9b90fa : (root.subtle ? Theme.border : Theme.accent));
+    background: root.danger ? (root.subtle ? (touch.has-hover ? Theme.danger-soft : Theme.paper) : (touch.has-hover || touch.pressed ? Theme.danger-hover : Theme.danger)) : (root.subtle ? (touch.has-hover ? #f0edff : Theme.paper) : (touch.pressed ? #4e40c7 : (touch.has-hover ? #5b4cdb : Theme.accent)));
+    opacity: root.disabled ? 0.5 : 1;
+    if root.danger && keyboard.has-focus: Rectangle {
+        x: -4px; y: -4px; width: root.width + 8px; height: root.height + 8px;
+        background: transparent; border-radius: 13px; border-width: 2px; border-color: Theme.danger;
+    }
+    Text {
+        text: root.label; color: root.subtle ? (root.danger ? Theme.danger : Theme.secondary) : #ffffff;
+        font-size: 13px; font-weight: 600;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    keyboard := FocusScope {
+        enabled: !root.disabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if !event.repeat && (event.text == Key.Return || event.text == " ") {
+                root.activated();
+                accept
+            } else { reject }
+        }
+    }
+    touch := TouchArea {
+        enabled: !root.disabled; mouse-cursor: pointer;
+        clicked => { keyboard.focus(); root.activated(); }
+    }
+}
+
+export component InputField inherits Rectangle {
+    in-out property <string> value;
+    in property <string> hint;
+    in property <bool> masked: false;
+    in property <bool> disabled: false;
+    in property <bool> read-only: false;
+    callback accepted;
+    callback edited;
+    out property <bool> focused: edit.has-focus;
+    forward-focus: edit;
+    height: 48px;
+    background: root.disabled ? #f4f3fa : Theme.paper;
+    border-radius: 9px;
+    border-width: edit.has-focus ? 2px : 1px;
+    border-color: edit.has-focus ? Theme.accent : #dcdcec;
+    Text {
+        x: 14px; width: parent.width - 28px; height: parent.height;
+        text: root.value == "" ? root.hint : "";
+        color: Theme.muted; font-size: 14px; vertical-alignment: center;
+    }
+    PointerArea {
+      width: parent.width; height: parent.height; enabled: !root.disabled; text-pointer: !root.read-only;
+      edit := SelectableInput {
+        x: 14px; width: parent.width - 28px; height: parent.height;
+        text <=> root.value;
+        enabled: !root.disabled; read-only: root.read-only; accessible-label: root.hint;
+        text-color: Theme.ink; font-size: 14px; vertical-alignment: center;
+        single-line: true; input-type: root.masked ? password : text;
+        accepted => { root.accepted(); }
+        edited => { root.edited(); }
+      }
+    }
+}
+
+export component EyeButton inherits Rectangle {
+    in property <bool> revealed: false;
+    in property <bool> disabled: false;
+    in property <string> label: "查看 Secret";
+    in property <string> caption;
+    out property <bool> focused: keyboard.has-focus;
+    callback activated;
+    forward-focus: keyboard;
+    accessible-role: button; accessible-label: root.label;
+    accessible-action-default => { if !root.disabled { root.activated(); } }
+    preferred-width: root.caption == "" ? 44px : 180px;
+    min-width: root.caption == "" ? 44px : 0px;
+    max-width: root.caption == "" ? 44px : 100000px;
+    horizontal-stretch: root.caption == "" ? 0 : 1;
+    height: root.caption == "" ? 44px : 48px;
+    border-radius: 9px; border-width: keyboard.has-focus ? 2px : 1px;
+    border-color: keyboard.has-focus ? Theme.accent : Theme.border;
+    background: touch.pressed ? #e2dcff : (touch.has-hover ? #eae5ff : #f2efff);
+    opacity: root.disabled ? 0.5 : 1;
+    HorizontalLayout {
+        alignment: center; cross-axis-alignment: center; spacing: 8px;
+        Image { source: root.revealed ? @image-url("eye-off.svg") : @image-url("eye.svg"); width: 20px; height: 20px; image-fit: contain; }
+        if root.caption != "": Text { text: root.caption; color: #5747bd; font-size: 13px; font-weight: 600; overflow: elide; vertical-alignment: center; }
+    }
+    keyboard := FocusScope {
+        enabled: !root.disabled; focus-on-click: false;
+        key-pressed(event) => {
+            if !event.repeat && (event.text == Key.Return || event.text == " ") { root.activated(); accept } else { reject }
+        }
+    }
+    touch := TouchArea { enabled: !root.disabled; mouse-cursor: pointer; clicked => { keyboard.focus(); root.activated(); } }
+}

@@ -1,0 +1,126 @@
+use sea_orm_migration::prelude::*;
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(Alias::new("transfer_receipts"))
+                    .col(
+                        ColumnDef::new(Alias::new("space_id"))
+                            .binary_len(16)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("package_id"))
+                            .binary_len(16)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("content_hash"))
+                            .binary_len(32)
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(Alias::new("result")).json().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("created_at"))
+                            .custom(Alias::new("DATETIME(6)"))
+                            .not_null(),
+                    )
+                    .primary_key(
+                        Index::create()
+                            .col(Alias::new("space_id"))
+                            .col(Alias::new("package_id")),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_transfer_space")
+                            .from(Alias::new("transfer_receipts"), Alias::new("space_id"))
+                            .to(Alias::new("spaces"), Alias::new("id")),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(Alias::new("memory_imports"))
+                    .col(
+                        ColumnDef::new(Alias::new("space_id"))
+                            .binary_len(16)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("memory_id"))
+                            .binary_len(16)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("package_id"))
+                            .binary_len(16)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("source_space"))
+                            .string_len(128)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("source_name"))
+                            .string_len(100)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("source_revision"))
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("imported_at"))
+                            .custom(Alias::new("DATETIME(6)"))
+                            .not_null(),
+                    )
+                    .primary_key(
+                        Index::create()
+                            .col(Alias::new("space_id"))
+                            .col(Alias::new("memory_id")),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_import_memory")
+                            .from(
+                                Alias::new("memory_imports"),
+                                (Alias::new("space_id"), Alias::new("memory_id")),
+                            )
+                            .to(
+                                Alias::new("memories"),
+                                (Alias::new("space_id"), Alias::new("id")),
+                            ),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_import_receipt")
+                            .from(
+                                Alias::new("memory_imports"),
+                                (Alias::new("space_id"), Alias::new("package_id")),
+                            )
+                            .to(
+                                Alias::new("transfer_receipts"),
+                                (Alias::new("space_id"), Alias::new("package_id")),
+                            ),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        Ok(())
+    }
+    async fn down(&self, _: &SchemaManager) -> Result<(), DbErr> {
+        Err(DbErr::Custom(
+            "迁入来源与回执不可自动删除，请使用向前迁移".into(),
+        ))
+    }
+}

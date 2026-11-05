@@ -1,0 +1,47 @@
+name: 持续集成
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "3"
+  RUSTUP_TOOLCHAIN: "1.99.1"
+
+jobs:
+  checks:
+    name: Rust、Wasm 与桥接检查
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 准备已固定的 Rust 工具链
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - name: 检查正式目标
+        run: |
+          cargo fmt --all --check
+          cargo check --locked --workspace --lib --bins
+          cargo clippy --locked --workspace --lib --bins
+          cargo clippy --locked -p chromie-web --target wasm32-unknown-unknown --lib
+      - name: 执行不依赖真实服务的测试
+        run: |
+          cargo test --locked --workspace --lib
+          node --test web/tests/bootstrap.test.mjs
+          python3 scripts/test-cli-installer.py
+          python3 scripts/test-release.py
+      - name: 校验容器与 Compose
+        run: |
+          docker buildx build --check .
+          docker compose config --quiet

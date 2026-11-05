@@ -1,0 +1,23 @@
+[package]
+name = "chromie-web"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Chromie 的 Slint / Wasm 控制台"
+repository = "https://github.com/kirito41dd/chromie"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+slint = { version = "1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg"] }
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+time = { version = "0.3.55", default-features = false, features = ["std", "parsing", "formatting"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2.129", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+slint = { version = "1.18.1", default-features = false, features = ["renderer-software"] }

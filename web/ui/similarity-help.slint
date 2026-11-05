@@ -1,0 +1,39 @@
+import { Theme } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export component SimilarityHelp inherits Rectangle {
+    height: content.preferred-height;
+    background: Theme.paper; border-radius: 10px; border-width: 1px; border-color: Theme.border;
+    content := VerticalLayout {
+        padding: 16px; spacing: 10px;
+        SelectableText { text: "相似度下限 · 专业参数"; font-size: 13px; font-weight: 600; text-color: Theme.ink; wrap: word-wrap; }
+        SelectableText { text: "范围 0～1，越高越严格，也越容易漏掉有效记忆。留空采用自动值，填 0 关闭过滤。只影响召回，不重建向量。"; font-size: 12px; text-color: Theme.secondary; wrap: word-wrap; }
+        SelectableText { text: "推荐 0.56 仅适用于已评测的 text-embedding-v4 · 1024 维 · plain-v1。其他模型或版本需重新验证。"; font-size: 12px; text-color: Theme.secondary; wrap: word-wrap; }
+        SelectableText { text: "评测：3,000 条语料、660 个查询。留出集明显无关查询返回内容由 60/60 降至 0/60，公开集前五条命中由 96/100 降至 93/100。"; font-size: 12px; text-color: Theme.secondary; wrap: word-wrap; }
+        SelectableText { text: "相似不代表有答案：主题接近但缺少所问信息时，仍有 48/50 返回内容。精确匹配按规则保留，模型不可用时继续关键词检索。"; font-size: 12px; text-color: Theme.muted; wrap: word-wrap; }
+    }
+}
+
+export component SimilarityInfo inherits Rectangle {
+    in-out property <bool> open;
+    callback activated;
+    callback help-hover(bool, length, length, length);
+    private property <bool> hovered: touch.has-hover;
+    changed hovered => { root.help-hover(root.hovered, root.absolute-position.x, root.absolute-position.y, root.height); }
+    width: 44px; height: 36px;
+    forward-focus: keyboard;
+    accessible-role: button; accessible-label: "相似度下限说明，专业参数";
+    accessible-action-default => { root.activated(); }
+    border-radius: 8px; border-width: keyboard.has-focus ? 2px : 0px; border-color: Theme.accent;
+    background: touch.has-hover || root.open ? #f0edff : transparent;
+    Image { x: (parent.width - 18px)/2; y: (parent.height - 18px)/2; width: 18px; height: 18px; source: @image-url("info.svg"); }
+    keyboard := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if !event.repeat && (event.text == Key.Return || event.text == " ") { root.activated(); accept }
+            else if event.text == Key.Escape { root.open = false; accept }
+            else { reject }
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { keyboard.focus(); root.activated(); } }
+}

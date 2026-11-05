@@ -1,0 +1,22 @@
+{
+  "name": "chromie",
+  "version": "0.1.0",
+  "description": "连接个人 Chromie 记忆空间，初始化 MCP 与消息采集。",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Chromie",
+    "shortDescription": "个人记忆空间与对话采集",
+    "longDescription": "通过本机私有配置连接自行部署的 Chromie，提供初始化、诊断及用户消息与最终回复采集。日常记忆规则由 MCP 提供。",
+    "developerName": "Chromie",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["帮我连接 Chromie，启用消息采集。", "检查 Chromie 连接和采集状态。"],
+    "brandColor": "#7864EB",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg"
+  },
+  "extensions": {
+    "com.openai": { "onboardingSkill": "./skills/setup/SKILL.md" }
+  }
+}

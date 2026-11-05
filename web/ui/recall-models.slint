@@ -1,0 +1,39 @@
+export struct RecallRow {
+    is-secret: bool,
+    secret-stored: bool,
+    secret-status: string,
+    secret-ref: string,
+    view-key: string,
+    content: string,
+    scope: string,
+    time: string,
+    memory-id: string,
+    detail: string,
+    agent-name: string,
+    pending: bool,
+    path: string,
+    score: string,
+    usage: string,
+    usage-detail: string,
+    web-usage: string,
+}
+
+export struct RecallStage {
+    number: string,
+    title: string,
+    value: string,
+    note: string,
+    warning: bool,
+}
+
+export struct RecallOverview {
+    has-diagnostics: bool,
+    index-available: bool,
+    limited: bool,
+    total-time: string,
+    client-time: string,
+    index-time: string,
+    qdrant-time: string,
+    index-config: string,
+    fallback-terms: string,
+}

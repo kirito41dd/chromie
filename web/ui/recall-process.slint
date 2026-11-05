@@ -1,0 +1,76 @@
+import { SelectableText } from "selectable-text.slint";
+import { Theme } from "common.slint";
+import { RecallStage, RecallOverview } from "recall-models.slint";
+
+component TimingTile inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    min-width: 0px; height: 76px;
+    background: #f7f6ff; border-radius: 10px;
+    VerticalLayout {
+        padding: 12px; spacing: 6px;
+        SelectableText { text: root.label; text-color: Theme.secondary; font-size: 11px; }
+        SelectableText { text: root.value; text-color: Theme.accent; font-size: 17px; font-weight: 600; }
+    }
+}
+
+export component RecallProcess inherits Rectangle {
+    min-width: 0px; max-width: 100000px; preferred-width: 320px;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    in property <RecallOverview> overview;
+    in property <[RecallStage]> stages;
+    out property <length> content-height: layout.preferred-height;
+    height: layout.preferred-height;
+    background: Theme.paper; border-radius: 14px;
+    border-width: 1px; border-color: Theme.border;
+    layout := VerticalLayout {
+        padding: 20px; spacing: 18px;
+        HorizontalLayout {
+            height: 26px; spacing: 8px; cross-axis-alignment: center;
+            Text { text: "本次检索"; color: Theme.ink; font-size: 16px; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            SelectableText { text: root.overview.index-available ? "索引可用" : "有限检索"; text-color: root.overview.index-available ? Theme.secondary : #96661e; font-size: 11px; }
+            Rectangle { width: 7px; height: 7px; border-radius: 4px; background: root.overview.index-available ? Theme.green : #b97a24; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            TimingTile { label: "服务端召回"; value: root.overview.total-time; }
+            TimingTile { label: "请求往返"; value: root.overview.client-time; }
+        }
+        if !root.overview.has-diagnostics: Text {
+            text: "服务端未提供检索过程，记忆结果仍可查看。";
+            color: Theme.secondary; font-size: 12px; wrap: word-wrap;
+        }
+        for stage in root.stages: HorizontalLayout {
+            spacing: 12px; cross-axis-alignment: start;
+            VerticalLayout {
+                width: 28px; spacing: 6px;
+                Rectangle {
+                    width: 28px; height: 28px; border-radius: 14px;
+                    background: stage.warning ? #fff3df : #eeebff;
+                    Text { text: stage.number; color: stage.warning ? #96661e : Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Rectangle { width: 28px; height: 36px; background: transparent;
+                    Rectangle { x: 13px; width: 2px; height: parent.height; background: stage.number == "04" ? transparent : Theme.border; }
+                }
+            }
+            VerticalLayout {
+                min-width: 0px; spacing: 7px;
+                HorizontalLayout {
+                    height: 28px; spacing: 8px; cross-axis-alignment: center;
+                    Text { min-width: 0px; text: stage.title; color: Theme.ink; font-size: 13px; font-weight: 600; overflow: elide; }
+                    Rectangle { horizontal-stretch: 1; }
+                    SelectableText { text: stage.value; text-color: stage.warning ? #96661e : Theme.accent; font-size: 16px; font-weight: 600; }
+                }
+                SelectableText { text: stage.note; text-color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+            }
+        }
+        if root.overview.has-diagnostics: VerticalLayout {
+            spacing: 8px;
+            Rectangle { height: 1px; background: Theme.border; }
+            SelectableText { text: "索引调用（含准备） " + root.overview.index-time; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+            SelectableText { text: "Qdrant 内部 " + root.overview.qdrant-time; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+            Text { text: "业务耗时不含鉴权与 HTTP 传输。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+        }
+    }
+}

@@ -1,0 +1,432 @@
+import { SelectableText, SelectableArea } from "selectable-text.slint";
+import { Theme, ActionButton, InputField } from "common.slint";
+
+export struct AgentRow {
+    id: string,
+    name: string,
+    enabled: bool,
+    status: string,
+    mcp: string,
+    capture: string,
+}
+
+component CommandBox inherits Rectangle {
+    in property <string> title;
+    in property <string> command;
+    in property <bool> compact;
+    in property <bool> tall;
+    callback copy;
+    min-width: 0px;
+    height: root.compact ? (root.tall ? 230px : 166px) : (root.tall ? 200px : 126px);
+    border-radius: 10px; background: #f7f7fc; border-width: 1px; border-color: Theme.border;
+    VerticalLayout {
+        padding: 14px; spacing: 10px;
+        HorizontalLayout {
+            Text { text: root.title; color: Theme.secondary; font-size: 12px; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            ActionButton { label: "复制"; height: 30px; min-width: 54px; subtle: true; activated => { root.copy(); } }
+        }
+        SelectableArea { text: root.command; code: true; wrap: word-wrap; font-size: 12px; min-width: 0px; min-height: 0px; vertical-stretch: 1; }
+    }
+}
+
+component KeyField inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> busy;
+    callback toggle;
+    callback copy;
+    callback rotate;
+    min-width: 0px; height: 130px; background: #f7f7fc; border-radius: 10px;
+    VerticalLayout {
+        padding: 14px; spacing: 9px;
+        Text { text: root.label; color: Theme.ink; font-size: 13px; font-weight: 600; }
+        HorizontalLayout {
+            spacing: 8px;
+            InputField { value: root.value == "" ? "••••••••••••" : root.value; read-only: true; }
+            ActionButton { label: root.value == "" ? "查看" : "隐藏"; min-width: 50px; subtle: true; disabled: root.busy; activated => { root.toggle(); } }
+            ActionButton { label: "复制"; min-width: 50px; subtle: true; disabled: root.busy || root.value == ""; activated => { root.copy(); } }
+        }
+        HorizontalLayout {
+            Text { text: "重置后旧密钥失效"; color: Theme.muted; font-size: 11px; }
+            Rectangle { horizontal-stretch: 1; }
+            ActionButton { label: "重置"; min-width: 50px; height: 28px; subtle: true; disabled: root.busy; activated => { root.rotate(); } }
+        }
+    }
+}
+
+component SetupStep inherits Rectangle {
+    in property <bool> compact;
+    in property <string> title;
+    in property <string> description;
+    in property <string> command;
+    callback copy;
+    min-width: 0px; height: step-content.preferred-height;
+    step-content := VerticalLayout { spacing: 10px;
+        Text { text: root.title; color: Theme.ink; font-size: 14px; font-weight: 600; }
+        Text { text: root.description; height: 34px; color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+        CommandBox { compact: root.compact; title: "终端命令"; command: root.command; copy => { root.copy(); } }
+    }
+}
+
+component ShellChoice inherits Rectangle {
+    in property <bool> nushell;
+    callback choose(bool);
+    width: 214px; height: 34px;
+    HorizontalLayout { spacing: 7px; cross-axis-alignment: center;
+        Text { text: "终端"; color: Theme.muted; font-size: 12px; }
+        ActionButton { label: "Bash"; min-width: 64px; height: 34px; subtle: root.nushell; activated => { root.choose(false); } }
+        ActionButton { label: "Nushell"; min-width: 88px; height: 34px; subtle: !root.nushell; activated => { root.choose(true); } }
+    }
+}
+
+component SetupGuide inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> codex;
+    in property <bool> nushell;
+    in property <string> path-command;
+    in property <string> path-note;
+    in property <bool> empty;
+    in property <string> install-command;
+    in property <string> init-command;
+    in property <string> repair-command;
+    in property <string> mcp-config;
+    in property <string> hook-config;
+    in property <string> agent-guidance;
+    callback choose(bool);
+    callback choose-shell(bool);
+    callback copy(string);
+    private property <bool> expanded: root.empty;
+    private property <bool> manual: false;
+    private property <bool> repair: false;
+    private property <bool> path-open: false;
+    private property <bool> guidance-open: false;
+    min-width: 0px; height: guide.preferred-height;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    guide := VerticalLayout {
+        padding: root.compact ? 16px : 22px; spacing: 16px;
+        HorizontalLayout {
+            spacing: 12px; cross-axis-alignment: center;
+            VerticalLayout { horizontal-stretch: 1; spacing: 5px;
+                Text { text: "连接新 Agent"; color: Theme.ink; font-size: 16px; font-weight: 600; }
+                Text { text: "安装 CLI，在浏览器确认接入"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            }
+            ActionButton { label: root.expanded ? "收起" : "开始连接"; min-width: root.expanded ? 54px : 84px; subtle: root.expanded; activated => { root.expanded = !root.expanded; } }
+        }
+        if root.expanded: VerticalLayout {
+            spacing: 16px;
+            HorizontalLayout {
+                spacing: 8px;
+                ActionButton { label: "Codex"; min-width: 78px; height: 36px; subtle: !root.codex; activated => { root.choose(true); } }
+                ActionButton { label: "通用接入"; min-width: 90px; height: 36px; subtle: root.codex; activated => { root.choose(false); } }
+                Rectangle { horizontal-stretch: 1; }
+                if !root.compact: ShellChoice { nushell: root.nushell; choose(value) => { root.choose-shell(value); } }
+            }
+            if root.compact: ShellChoice { nushell: root.nushell; choose(value) => { root.choose-shell(value); } }
+            if root.width >= 900px: HorizontalLayout { spacing: 16px;
+                SetupStep { compact: root.compact; title: "1  安装 CLI"; description: "首次安装一次，已有 CLI 可跳过。"; command: root.install-command; copy => { root.copy("install"); } }
+                SetupStep { compact: root.compact; title: "2  初始化连接"; description: "已有配置时先在终端确认，再到浏览器选择接入。"; command: root.init-command; copy => { root.copy("init"); } }
+            }
+            if root.width < 900px: VerticalLayout { spacing: 16px;
+                SetupStep { compact: root.compact; title: "1  安装 CLI"; description: "首次安装一次，已有 CLI 可跳过。"; command: root.install-command; copy => { root.copy("install"); } }
+                SetupStep { compact: root.compact; title: "2  初始化连接"; description: "已有配置时先在终端确认，再到浏览器选择接入。"; command: root.init-command; copy => { root.copy("init"); } }
+            }
+            Text { text: root.codex ? "3  在 Codex 中启用采集" : "3  配置你的客户端"; color: Theme.ink; font-size: 14px; font-weight: 600; }
+            Text { text: root.codex ? "CLI 自动配置 MCP 并安装 hook。首次在 Codex /hooks 信任后，重载或新开对话。" : "CLI 保存本机凭据。按客户端格式配置 MCP，让消息 hook 调用 chromie capture。"; color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+            Text { text: "发送一条新消息，再查看下方的 MCP 请求与消息上传时间。"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            HorizontalLayout { alignment: start;
+                ActionButton { label: root.guidance-open ? "收起记忆使用提示" : "记忆使用提示（可选）"; min-width: 176px; height: 36px; subtle: true; activated => { root.guidance-open = !root.guidance-open; } }
+            }
+            if root.guidance-open: VerticalLayout { spacing: 12px;
+                SelectableText { text: root.codex ? "可加入个人 ~/.codex/AGENTS.md（自定义 CODEX_HOME 时使用其目录）。已有 AGENTS.override.md 时需放入该文件；重新开启对话后生效。" : "可放入客户端的个人长期指令。具体文件位置与生效方式以客户端为准。"; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+                CommandBox { compact: root.compact; tall: true; title: "个人指引 · 手动添加"; command: root.agent-guidance; copy => { root.copy("guidance"); } }
+                Text { text: "核心规则由 MCP 提供；这段文字只提醒 Agent 按需使用记忆，页面不会修改个人配置。"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            }
+            if !root.codex: HorizontalLayout {
+                alignment: start;
+                ActionButton { label: root.manual ? "收起适配说明" : "MCP 与 hook 适配"; subtle: true; min-width: 160px; height: 34px; activated => { root.manual = !root.manual; } }
+            }
+            if !root.codex && root.manual: VerticalLayout {
+                spacing: 12px;
+                Text { text: "密钥由 CLI 保存到 ~/.config/chromie/generic/client.json，按需在本地读取。下面是格式示例。"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                CommandBox { compact: root.compact; tall: true; title: "MCP 格式示例"; command: root.mcp-config; copy => { root.copy("mcp"); } }
+                CommandBox { compact: root.compact; tall: true; title: "采集命令与标准输入"; command: root.hook-config; copy => { root.copy("hook"); } }
+            }
+            HorizontalLayout { alignment: start;
+                ActionButton { label: root.path-open ? "收起 PATH 配置" : "加入 PATH（可选）"; min-width: 156px; height: 34px; subtle: true; activated => { root.path-open = !root.path-open; } }
+            }
+            if root.path-open: VerticalLayout { spacing: 12px;
+                CommandBox { compact: root.compact; title: "当前终端生效"; command: root.path-command; copy => { root.copy("path"); } }
+                SelectableText { text: root.path-note; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+            }
+            HorizontalLayout { alignment: start;
+                ActionButton { label: root.repair ? "收起排查命令" : "已有连接，如何排查？"; min-width: 172px; height: 34px; subtle: true; activated => { root.repair = !root.repair; } }
+            }
+            if root.repair: CommandBox { compact: root.compact; title: "检查与修复"; command: root.repair-command; copy => { root.copy("repair"); } }
+        }
+    }
+}
+
+component AgentDetails inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> busy;
+    in property <bool> enabled;
+    in property <bool> advanced;
+    in property <bool> editing;
+    in property <bool> allow-secrets;
+    in property <string> agent-id;
+    in property <string> mcp-time;
+    in property <string> capture-time;
+    in property <string> label;
+    in-out property <string> draft;
+    in property <string> mcp-key;
+    in property <string> hook-key;
+    in property <string> confirm-kind;
+    callback edit-name;
+    callback save-name;
+    callback cancel-name;
+    callback toggle-enabled;
+    callback toggle-advanced;
+    callback toggle-secrets;
+    callback toggle-key(string);
+    callback copy-key(string);
+    callback rotate-key(string);
+    callback confirm-rotate;
+    callback cancel-rotate;
+    callback download;
+    min-width: 0px; height: detail.preferred-height; background: Theme.paper;
+    detail := VerticalLayout {
+        padding-left: root.compact ? 16px : 20px; padding-right: root.compact ? 16px : 20px; padding-bottom: 20px; spacing: 14px;
+        Rectangle { height: 1px; background: Theme.border; }
+        SelectableText { text: root.label; text-color: Theme.ink; font-size: 14px; font-weight: 600; accessible-label: "接入名称"; }
+        SelectableText { text: root.agent-id; text-color: Theme.muted; font-size: 11px; wrap: char-wrap; accessible-label: "Agent ID"; }
+        SelectableText { text: "MCP 请求  " + root.mcp-time + "\n消息上传  " + root.capture-time; text-color: Theme.muted; font-size: 11px; }
+        if !root.editing: HorizontalLayout {
+            spacing: 8px;
+            ActionButton { label: "修改名称"; height: 34px; min-width: 86px; subtle: true; disabled: root.busy; activated => { root.edit-name(); } }
+            ActionButton { label: root.enabled ? "停用" : "重新启用"; height: 34px; min-width: 86px; subtle: true; disabled: root.busy; activated => { root.toggle-enabled(); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if root.editing: VerticalLayout {
+            spacing: 10px;
+            InputField { value <=> root.draft; hint: "接入名称"; disabled: root.busy; accepted => { root.save-name(); } }
+            HorizontalLayout { spacing: 8px; alignment: start;
+                ActionButton { label: "保存名称"; height: 34px; min-width: 90px; disabled: root.busy || root.draft == root.label; activated => { root.save-name(); } }
+                ActionButton { label: "取消"; height: 34px; min-width: 60px; subtle: true; disabled: root.busy; activated => { root.cancel-name(); } }
+            }
+        }
+        HorizontalLayout { alignment: start;
+            ActionButton { label: root.advanced ? "收起高级设置" : "密钥与权限"; height: 34px; min-width: 120px; subtle: true; disabled: root.busy; activated => { root.toggle-advanced(); } }
+        }
+        if root.advanced: VerticalLayout {
+            spacing: 14px;
+            HorizontalLayout { spacing: 10px; alignment: start; cross-axis-alignment: center;
+                ActionButton { label: root.allow-secrets ? "关闭 Secret 存取" : "允许 Secret 存取"; min-width: 136px; height: 34px; subtle: true; disabled: root.busy; activated => { root.toggle-secrets(); } }
+                Text { text: root.allow-secrets ? "已允许" : "未授权"; color: root.allow-secrets ? Theme.green : Theme.muted; font-size: 12px; }
+            }
+            Text { text: "开启后，本地程序可读取此空间的 Secret 原文。MCP 仍只返回说明与引用。"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            KeyField { label: "MCP 密钥 · 记忆读写"; value: root.mcp-key; busy: root.busy; toggle => { root.toggle-key("mcp"); } copy => { root.copy-key("mcp"); } rotate => { root.rotate-key("mcp"); } }
+            KeyField { label: "hook 密钥 · 消息上传"; value: root.hook-key; busy: root.busy; toggle => { root.toggle-key("hook"); } copy => { root.copy-key("hook"); } rotate => { root.rotate-key("hook"); } }
+            if root.confirm-kind != "": VerticalLayout {
+                spacing: 10px;
+                Text { text: "重置后旧密钥立即失效，本机连接需要重新初始化。"; color: #a13b33; font-size: 12px; wrap: word-wrap; }
+                HorizontalLayout { spacing: 8px; alignment: start;
+                    ActionButton { label: "确认重置"; disabled: root.busy; min-width: 90px; activated => { root.confirm-rotate(); } }
+                    ActionButton { label: "取消"; subtle: true; disabled: root.busy; min-width: 60px; activated => { root.cancel-rotate(); } }
+                }
+            }
+            HorizontalLayout { alignment: start;
+                ActionButton { label: "导出接入文件"; min-width: 128px; height: 34px; subtle: true; disabled: root.busy; activated => { root.download(); } }
+            }
+            Text { text: "文件含两枚密钥，仅用于高级手动接入。CLI 初始化无需导出。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+        }
+    }
+}
+
+export component AccessPage inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> busy;
+    in property <bool> loaded;
+    in property <[AgentRow]> agents;
+    in-out property <string> new-name;
+    in property <bool> codex;
+    in property <bool> nushell;
+    in property <string> path-command;
+    in property <string> path-note;
+    in property <string> selected-id;
+    in property <string> selected-label;
+    in-out property <string> selected-name;
+    in property <bool> selected-enabled;
+    in property <bool> advanced-open;
+    in property <bool> editing-name;
+    in property <bool> allow-secrets;
+    in property <string> mcp-key;
+    in property <string> hook-key;
+    in property <string> notice;
+    in property <string> error;
+    in property <string> install-command;
+    in property <string> init-command;
+    in property <string> repair-command;
+    in property <string> mcp-config;
+    in property <string> hook-config;
+    in property <string> agent-guidance;
+    in property <string> confirm-kind;
+    in property <string> pair-code;
+    in property <string> pair-client;
+    in property <string> pair-status;
+    in property <int> pair-seconds;
+    in property <string> pair-agent;
+    private property <bool> pairing: root.pair-status != "";
+    private property <bool> new-open: root.pair-status == "ready" && root.agents.length == 0;
+    changed selected-id => { root.new-open = false; }
+    callback create;
+    callback refresh;
+    callback select(string);
+    callback edit-name;
+    callback save-name;
+    callback cancel-name;
+    callback toggle-enabled;
+    callback toggle-advanced;
+    callback toggle-secrets;
+    callback toggle-key(string);
+    callback copy-key(string);
+    callback rotate-key(string);
+    callback confirm-rotate;
+    callback cancel-rotate;
+    callback copy-config(string);
+    callback download;
+    callback choose-mode(bool);
+    callback choose-shell(bool);
+    callback approve-pair;
+    callback dismiss-pair;
+    min-width: 0px; height: content.preferred-height;
+    out property <length> page-content-height: content.preferred-height;
+    content := VerticalLayout {
+        spacing: 16px;
+        if !root.pairing && root.loaded: SetupGuide {
+            compact: root.compact; codex: root.codex; empty: root.agents.length == 0; nushell: root.nushell;
+            path-command: root.path-command; path-note: root.path-note;
+            install-command: root.install-command; init-command: root.init-command; repair-command: root.repair-command; mcp-config: root.mcp-config; hook-config: root.hook-config;
+            agent-guidance: root.agent-guidance;
+            choose(value) => { root.choose-mode(value); } choose-shell(value) => { root.choose-shell(value); } copy(kind) => { root.copy-config(kind); }
+        }
+        if root.pairing: Rectangle {
+            height: pairing-head.preferred-height; border-radius: 12px; background: #f1edff; border-width: 1px; border-color: #d8d0fc;
+            pairing-head := VerticalLayout {
+                padding: root.compact ? 16px : 22px; spacing: 12px;
+                Text { text: root.pair-status == "approved" ? "已确认，请返回终端" : root.pair-status == "ended" ? "这次请求已结束" : root.pair-status == "failed" ? "暂时无法读取请求" : root.pair-status == "loading" ? "正在读取接入请求…" : "核对本机确认码"; color: Theme.ink; font-size: 17px; font-weight: 600; wrap: word-wrap; }
+                if root.pair-status == "ready": VerticalLayout { spacing: 10px;
+                    SelectableText { text: root.pair-client + "  ·  " + root.pair-code; text-color: Theme.accent; font-size: 17px; font-weight: 600; wrap: word-wrap; }
+                    Text { text: "与终端显示一致后，选择要绑定的接入。"; color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                    Text { text: "剩余 " + root.pair-seconds + " 秒"; color: Theme.muted; font-size: 12px; }
+                }
+                if root.pair-status == "approved": VerticalLayout { spacing: 12px;
+                    Text { text: "绑定到「" + root.pair-agent + "」。CLI 将继续配置，请等待终端结果。"; color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                    Text { text: "确认授权还不代表 MCP 和采集已完成连接。"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                    HorizontalLayout { alignment: start; ActionButton { label: "查看接入状态"; min-width: 128px; activated => { root.dismiss-pair(); } } }
+                }
+                if root.pair-status == "ended": VerticalLayout { spacing: 12px;
+                    Text { text: "请求可能已领取或过期。如果终端尚未完成，请重新运行 init 获取新请求。"; color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                    HorizontalLayout { alignment: start; ActionButton { label: "返回接入管理"; min-width: 128px; subtle: true; activated => { root.dismiss-pair(); } } }
+                }
+                if root.pair-status == "failed": VerticalLayout { spacing: 12px;
+                    Text { text: "未能确认当前状态，请重试或回到终端查看结果。"; color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                    HorizontalLayout { spacing: 8px; alignment: start;
+                        ActionButton { label: "重试"; min-width: 68px; disabled: root.busy; activated => { root.refresh(); } }
+                        ActionButton { label: "返回管理"; min-width: 90px; subtle: true; disabled: root.busy; activated => { root.dismiss-pair(); } }
+                    }
+                }
+            }
+        }
+        if !root.loaded: Rectangle {
+            height: 100px; border-radius: 12px; background: Theme.paper;
+            VerticalLayout { padding: 20px; spacing: 12px;
+                Text { text: root.busy ? "正在读取接入记录…" : "接入记录尚未加载"; color: Theme.muted; font-size: 13px; }
+                if !root.busy: HorizontalLayout { alignment: start; ActionButton { label: "重新加载"; height: 32px; subtle: true; activated => { root.refresh(); } } }
+            }
+        }
+        if root.loaded && (!root.pairing || root.pair-status == "ready"): VerticalLayout {
+            spacing: 12px;
+            HorizontalLayout {
+                cross-axis-alignment: center;
+                Text { text: root.pairing ? "选择接入" : "接入记录 · " + root.agents.length; color: Theme.ink; font-size: 15px; font-weight: 600; }
+                Rectangle { horizontal-stretch: 1; }
+                ActionButton { label: root.busy ? "刷新中…" : "刷新"; height: 32px; min-width: 52px; subtle: true; disabled: root.busy; activated => { root.refresh(); } }
+                ActionButton { label: root.new-open ? "取消" : "新建"; height: 32px; min-width: 52px; subtle: true; disabled: root.busy; activated => { root.new-open = !root.new-open; if !root.new-open { root.new-name = ""; } } }
+            }
+            if root.new-open: Rectangle {
+                height: new-form.preferred-height; border-radius: 10px; background: Theme.paper; border-width: 1px; border-color: Theme.border;
+                new-form := VerticalLayout {
+                    padding: 16px; spacing: 12px;
+                    Text { text: "新建接入"; color: Theme.ink; font-size: 14px; font-weight: 600; }
+                    InputField { value <=> root.new-name; hint: "例如 工作电脑上的 Codex"; disabled: root.busy; accepted => { root.create(); } }
+                    HorizontalLayout { alignment: start;
+                        ActionButton { label: "创建接入"; height: 36px; min-width: 100px; disabled: root.busy || root.new-name == ""; activated => { root.create(); } }
+                    }
+                }
+            }
+            if root.agents.length == 0 && !root.new-open: Rectangle {
+                height: empty-note.preferred-height; border-radius: 12px; background: Theme.paper;
+                empty-note := VerticalLayout { padding: 20px; spacing: 8px;
+                    Text { text: "还没有接入记录"; color: Theme.ink; font-size: 14px; font-weight: 600; }
+                    Text { text: root.pairing ? "新建一个接入，区分这台电脑或这个 Agent 的来源。" : "先运行初始化命令，CLI 打开的确认页也可以创建接入。"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                }
+            }
+            for row in root.agents: Rectangle {
+                height: item.preferred-height; border-radius: 10px; background: Theme.paper; border-width: 1px;
+                border-color: row.id == root.selected-id ? #bfb4fb : Theme.border;
+                item := VerticalLayout { spacing: 0px;
+                    summary := Rectangle {
+                        height: root.compact ? 116px : 88px;
+                        background: row.id == root.selected-id ? #f0edff : (card-touch.has-hover ? #faf9ff : Theme.paper);
+                        border-radius: 10px; forward-focus: card-keyboard;
+                        border-width: card-keyboard.has-focus ? 2px : 0px; border-color: Theme.accent;
+                        accessible-role: button; accessible-label: (row.id == root.selected-id ? (root.pairing ? "已选中 " : "收起 ") : "选择 ") + row.name;
+                        accessible-action-default => { if !root.busy && (!root.pairing || row.enabled) { root.select(row.id); } }
+                        VerticalLayout { padding: 16px; spacing: 8px;
+                            HorizontalLayout { spacing: 9px; cross-axis-alignment: center;
+                                Rectangle { width: 7px; height: 7px; border-radius: 4px; background: !row.enabled ? #aaa9bc : row.status == "等待连接" ? #c2953d : Theme.green; }
+                                Text { text: row.name; color: Theme.ink; font-size: 14px; font-weight: 600; overflow: elide; horizontal-stretch: 1; }
+                                Text { text: row.status; color: Theme.muted; font-size: 11px; }
+                            }
+                            if !root.compact: HorizontalLayout { spacing: 20px;
+                                Text { text: "MCP 请求  " + row.mcp; color: Theme.muted; font-size: 12px; horizontal-stretch: 1; }
+                                Text { text: "消息上传  " + row.capture; color: Theme.muted; font-size: 12px; horizontal-stretch: 1; }
+                            }
+                            if root.compact: VerticalLayout { spacing: 5px;
+                                Text { text: "MCP 请求  " + row.mcp; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                                Text { text: "消息上传  " + row.capture; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                            }
+                        }
+                        card-keyboard := FocusScope { enabled: !root.busy && (!root.pairing || row.enabled); focus-on-click: false;
+                            key-pressed(event) => { if !event.repeat && (event.text == Key.Return || event.text == " ") { root.select(row.id); accept } else { reject } }
+                        }
+                        card-touch := TouchArea { enabled: !root.busy && (!root.pairing || row.enabled); mouse-cursor: pointer; clicked => { card-keyboard.focus(); root.select(row.id); } }
+                    }
+                    if row.id == root.selected-id && !root.pairing: AgentDetails {
+                        compact: root.compact; busy: root.busy; enabled: root.selected-enabled; advanced: root.advanced-open; editing: root.editing-name;
+                        allow-secrets: root.allow-secrets; label: root.selected-label; draft <=> root.selected-name;
+                        agent-id: root.selected-id; mcp-key: root.mcp-key; hook-key: root.hook-key; confirm-kind: root.confirm-kind;
+                        mcp-time: row.mcp; capture-time: row.capture;
+                        edit-name => { root.edit-name(); } save-name => { root.save-name(); } cancel-name => { root.cancel-name(); }
+                        toggle-enabled => { root.toggle-enabled(); } toggle-advanced => { root.toggle-advanced(); } toggle-secrets => { root.toggle-secrets(); }
+                        toggle-key(kind) => { root.toggle-key(kind); } copy-key(kind) => { root.copy-key(kind); } rotate-key(kind) => { root.rotate-key(kind); }
+                        confirm-rotate => { root.confirm-rotate(); } cancel-rotate => { root.cancel-rotate(); } download => { root.download(); }
+                    }
+            if root.pairing && row.id == root.selected-id: Rectangle {
+                height: confirm-body.preferred-height; border-radius: 12px; background: Theme.paper; border-width: 1px; border-color: Theme.border;
+                confirm-body := VerticalLayout { padding: root.compact ? 16px : 20px; spacing: 12px;
+                    Text { text: root.selected-id == "" ? "请选择一个接入" : "连接到「" + root.selected-label + "」"; color: Theme.ink; font-size: 14px; font-weight: 600; wrap: word-wrap; }
+                    if root.selected-id != "": Text { text: "CLI 将获取此接入的 MCP 与消息上传密钥。"; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                    HorizontalLayout { spacing: 8px; alignment: start;
+                        ActionButton { label: root.busy ? "处理中…" : "确认连接"; min-width: 104px; disabled: root.busy || root.selected-id == "" || !root.selected-enabled || root.pair-seconds <= 0; activated => { root.approve-pair(); } }
+                        ActionButton { label: "返回管理"; min-width: 90px; subtle: true; disabled: root.busy; activated => { root.dismiss-pair(); } }
+                    }
+                }
+            }
+                }
+            }
+            if !root.pairing && root.agents.length > 0: Text { text: "以上时间表示服务实际收到过请求；采集测试消息也会更新记录。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+        }
+    }
+}

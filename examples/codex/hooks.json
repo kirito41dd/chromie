@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CHROMIE_BIN}\" capture",
+            "timeout": 5,
+            "statusMessage": "Chromie 正在保存用户消息"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CHROMIE_BIN}\" capture",
+            "timeout": 5,
+            "statusMessage": "Chromie 正在保存最终回复"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,79 @@
+name: chromie
+x-chromie-image: &chromie-image
+  image: ${CHROMIE_IMAGE:-chromie:local}
+  pull_policy: never
+  build: .
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  bootstrap:
+    <<: *chromie-image
+    command: ["container-init"]
+    volumes:
+      - ./config:/config
+      - ./data:/data
+    restart: "no"
+    logging: *logging
+  mysql:
+    image: mysql:8.4
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      MYSQL_DATABASE: chromie
+      MYSQL_USER: chromie
+      MYSQL_PASSWORD_FILE: /run/chromie-mysql/password
+      MYSQL_ROOT_PASSWORD_FILE: /run/chromie-mysql/root-password
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+      - ./config/mysql:/run/chromie-mysql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+    logging: *logging
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    command: ["./qdrant", "--config-path", "/run/chromie-qdrant/config.yaml", "--disable-telemetry"]
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+      - ./config/qdrant:/run/chromie-qdrant:ro
+    restart: unless-stopped
+    logging: *logging
+  chromie:
+    <<: *chromie-image
+    init: true
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${CHROMIE_PORT:-8732}:8732"
+    volumes:
+      - ./config:/config
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "chromie-server", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *logging

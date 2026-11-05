@@ -1,0 +1,127 @@
+import { ScrollView } from "std-widgets.slint";
+
+export global CopyBridge {
+    callback begin() -> int;
+    callback update(int, string, int, int);
+    callback end(int);
+}
+
+export global PointerBridge {
+    private property <int> owner: 0;
+    callback update(bool);
+    public function enter(arrow: bool) -> int {
+        self.owner = self.owner == 2147483647 ? 1 : self.owner + 1;
+        self.update(arrow);
+        return self.owner;
+    }
+    public function leave(owner: int) {
+        if owner == self.owner { self.update(false); }
+    }
+}
+
+// 只观察悬停，文字控件仍接收完整的点击、拖选和滚动事件。
+export component PointerArea inherits TouchArea {
+    in property <bool> text-pointer: false;
+    private property <int> owner: 0;
+    mouse-cursor: root.text-pointer ? text : default;
+    changed has-hover => {
+        if self.has-hover { root.owner = PointerBridge.enter(!root.text-pointer); }
+        else { PointerBridge.leave(root.owner); root.owner = 0; }
+    }
+    changed text-pointer => {
+        if self.has-hover { root.owner = PointerBridge.enter(!root.text-pointer); }
+    }
+    scroll-event(event) => { reject }
+}
+
+// 只读控件不启用 IME，通过浏览器原生 copy 事件读取当前选区快照。
+export component SelectableInput inherits TextInput {
+    read-only: true;
+    in property <brush> text-color: #252542;
+    private property <bool> display-only: self.read-only && self.anchor-position-byte-offset == self.cursor-position-byte-offset;
+    // Femtovg 仍会画出零宽光标。无选区时由不可聚焦的层绘制，保留相同排版和密码遮罩。
+    color: root.display-only ? transparent : root.text-color;
+    TextInput {
+        visible: root.display-only;
+        enabled: false; read-only: true; accessible-role: AccessibleRole.none;
+        width: parent.width; height: parent.height;
+        text: root.text; color: root.text-color;
+        input-type: root.input-type; single-line: root.single-line;
+        font-family: root.font-family; font-size: root.font-size; font-weight: root.font-weight;
+        letter-spacing: root.letter-spacing; line-height-factor: root.line-height-factor;
+        wrap: root.wrap; horizontal-alignment: root.horizontal-alignment; vertical-alignment: root.vertical-alignment;
+    }
+    private property <int> selection-owner: 0;
+    function publish-selection() {
+        if self.has-focus && self.read-only {
+            if root.selection-owner == 0 { root.selection-owner = CopyBridge.begin(); }
+            CopyBridge.update(root.selection-owner, self.text, self.anchor-position-byte-offset, self.cursor-position-byte-offset);
+        }
+    }
+    changed has-focus => {
+        if self.has-focus { root.publish-selection(); }
+        else { CopyBridge.end(root.selection-owner); root.selection-owner = 0; }
+    }
+    changed text => { root.publish-selection(); }
+    cursor-position-changed(position) => { root.publish-selection(); }
+}
+
+// 内容展示用只读文本，保留原生拖选与复制，不显示输入框边框。
+export component SelectableText inherits Rectangle {
+    in property <string> text;
+    in property <color> text-color: #252542;
+    in property <length> font-size: 14px;
+    in property <int> font-weight: 400;
+    in property <TextOverflow> overflow: clip;
+    in property <TextWrap> wrap: root.overflow == elide ? no-wrap : word-wrap;
+    in property <TextHorizontalAlignment> horizontal-alignment: left;
+    in property <TextVerticalAlignment> vertical-alignment: top;
+    in property <bool> single-line: root.overflow == elide;
+    in property <bool> text-pointer: false;
+    out property <bool> focused: edit.has-focus;
+    min-width: 0px;
+    preferred-width: measure.preferred-width;
+    preferred-height: max(1px, measure.preferred-height);
+    clip: true;
+    forward-focus: edit;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    measure := Text {
+        width: parent.width; visible: false;
+        text: root.text; color: root.text-color; font-size: root.font-size; font-weight: root.font-weight;
+        wrap: root.wrap; horizontal-alignment: root.horizontal-alignment;
+    }
+    // 标签平时显示省略号；获取焦点后选择完整原文，复制不包含省略号。
+    if root.overflow == elide && !edit.has-focus: Text {
+        width: parent.width; height: parent.height;
+        text: root.text; color: root.text-color; font-size: root.font-size; font-weight: root.font-weight;
+        wrap: no-wrap; overflow: elide;
+        horizontal-alignment: root.horizontal-alignment; vertical-alignment: root.vertical-alignment;
+    }
+    PointerArea {
+      width: parent.width; height: parent.height; text-pointer: root.text-pointer;
+      edit := SelectableInput {
+        width: parent.width; height: parent.height;
+        text: root.text; read-only: true; single-line: root.single-line;
+        wrap: root.wrap; text-color: root.overflow == elide && !edit.has-focus ? transparent : root.text-color;
+        font-size: root.font-size; font-weight: root.font-weight;
+        horizontal-alignment: root.horizontal-alignment; vertical-alignment: root.vertical-alignment;
+        selection-background-color: #6d5ef7; selection-foreground-color: #ffffff;
+        accessible-label: root.accessible-label == "" ? root.text : root.accessible-label;
+      }
+    }
+}
+
+export component SelectableArea inherits Rectangle {
+    in property <string> text;
+    in property <length> font-size: 12px;
+    in property <TextWrap> wrap: word-wrap;
+    in property <bool> code: false;
+    min-width: 0px; min-height: 0px;
+    background: #ffffff; border-radius: 7px; border-width: 1px; border-color: #e5e5f2;
+    scroll := ScrollView {
+        x: 8px; y: 8px; width: max(0px, parent.width - 16px); height: max(0px, parent.height - 16px);
+        horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+        SelectableText { width: scroll.visible-width; text: root.text; font-size: root.font-size; wrap: root.wrap; text-pointer: root.code; }
+    }
+}

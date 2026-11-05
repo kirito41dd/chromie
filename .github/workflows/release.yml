@@ -1,0 +1,276 @@
+name: 构建与发布
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 防止同一个发行过程被新提交中途取消；发布 job 另作串行处理。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: docker.io/kirito41dd/chromie
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "3"
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 核对版本和发布条件
+        id: version
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          release = os.environ["GITHUB_EVENT_NAME"] == "push" and os.environ["GITHUB_REF"].startswith("refs/tags/")
+          if release and os.environ["GITHUB_REPOSITORY"] != "kirito41dd/chromie":
+              raise SystemExit("派生仓库需先修改发布目标，不能向上游发布。")
+          command = ["python3", "scripts/prepare-release.py", "--print-version"]
+          if release:
+              command += ["--tag", os.environ["GITHUB_REF_NAME"]]
+          value = subprocess.check_output(command, text=True).strip()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"value={value}\npublish={str(release).lower()}\n")
+          PY
+
+      - name: 仅正式发行时检查 Docker Hub 发布凭据
+        if: steps.version.outputs.publish == 'true'
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo '请先配置具有写入权限的 DOCKERHUB_TOKEN 仓库 Secret。'
+            exit 1
+          fi
+
+  checks:
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+
+  clients:
+    name: CLI · ${{ matrix.target }}
+    needs: [metadata, checks]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, platform: linux/amd64}
+          - {runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, platform: linux/arm64}
+          - {runner: macos-15-intel, target: x86_64-apple-darwin}
+          - {runner: macos-15, target: aarch64-apple-darwin}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: runner.os == 'Linux'
+      - name: 在 bookworm 构建 Linux CLI
+        if: runner.os == 'Linux'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: client-export
+          platforms: ${{ matrix.platform }}
+          outputs: type=local,dest=.local/linux-client
+          cache-from: type=gha,scope=cli-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=cli-${{ matrix.target }}
+      - name: 在对应 macOS 构建 CLI
+        if: runner.os == 'macOS'
+        env:
+          RUSTUP_TOOLCHAIN: "1.99.1"
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$EXPECTED_TARGET"
+          cargo build --locked --release -p chromie --no-default-features --features client --bin chromie
+      - name: 执行客户端并生成校验值
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            binary=.local/linux-client/chromie
+          else
+            binary=target/release/chromie
+          fi
+          test "$("$binary" --version)" = "chromie $VERSION"
+          python3 scripts/build-cli.py --binary "$binary" --target "$TARGET" --output packaging/clients
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-${{ matrix.target }}
+          path: packaging/clients/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  images:
+    name: 镜像 · ${{ matrix.arch }}
+    needs: [metadata, clients]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, arch: amd64, platform: linux/amd64}
+          - {runner: ubuntu-24.04-arm, arch: arm64, platform: linux/arm64}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cli-*
+          path: packaging/clients
+          merge-multiple: true
+      - name: 拒绝缺失、损坏或放错架构的客户端
+        run: python3 scripts/prepare-release.py
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: labels
+        with:
+          images: ${{ env.IMAGE }}
+      - name: 构建待验收镜像
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          provenance: false
+          tags: chromie:ci
+          build-args: |
+            CHROMIE_VERSION=${{ needs.metadata.outputs.version }}
+            CHROMIE_REVISION=${{ github.sha }}
+          labels: ${{ steps.labels.outputs.labels }}
+          cache-from: |
+            type=gha,scope=cli-${{ matrix.platform == 'linux/amd64' && 'x86_64-unknown-linux-gnu' || 'aarch64-unknown-linux-gnu' }}
+            type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+      - name: 独立 Compose 验证首次启动、鉴权、Secret 与重启保留
+        run: |
+          docker compose pull mysql qdrant
+          python3 scripts/test-docker-deployment.py --image chromie:ci --client-container
+      - name: 登录 Docker Hub
+        if: needs.metadata.outputs.publish == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: kirito41dd
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # 复用本 job 已验收的构建缓存；只推送临时标签，未验收完整前不更新版本／latest。
+      - name: 推送已验收的平台镜像
+        id: push
+        if: needs.metadata.outputs.publish == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          tags: ${{ env.IMAGE }}:build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          build-args: |
+            CHROMIE_VERSION=${{ needs.metadata.outputs.version }}
+            CHROMIE_REVISION=${{ github.sha }}
+          labels: ${{ steps.labels.outputs.labels }}
+      - name: 保存平台镜像摘要
+        if: needs.metadata.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          digest = os.environ["DIGEST"]
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+              raise SystemExit("未取得有效的镜像摘要")
+          path = Path(".local/digests")
+          path.mkdir(parents=True, exist_ok=True)
+          (path / (os.environ["ARCH"] + ".txt")).write_text(digest)
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: needs.metadata.outputs.publish == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: .local/digests/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: image-test-${{ matrix.arch }}
+          path: .local/docker-tests/*/results.json
+          include-hidden-files: true
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    name: 发布版本与多架构镜像
+    if: needs.metadata.outputs.publish == 'true'
+    needs: [metadata, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: chromie-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cli-*
+          path: packaging/clients
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-*
+          path: .local/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: kirito41dd
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: 生成固定版本的 Compose、客户端和校验清单
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: python3 scripts/prepare-release.py --tag "$GITHUB_REF_NAME" --image "$IMAGE:$VERSION" --output .local/release
+      - name: 两个平台成功后发布不可覆盖的版本索引
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: python3 scripts/publish-image-index.py --image "$IMAGE" --version "$VERSION" --revision "$GITHUB_SHA" --digests .local/digests
+      - name: 发布 GitHub 发行材料
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" .local/release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" .local/release/* --verify-tag --generate-notes --title "Chromie $GITHUB_REF_NAME"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: release-files
+          path: .local/release/
+          include-hidden-files: true
+          retention-days: 7
+          overwrite: true

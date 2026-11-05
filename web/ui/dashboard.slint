@@ -1,0 +1,700 @@
+import { TransferPage, TransferRow, TransferUnlockDialog } from "transfer.slint";
+import { SelectableText } from "selectable-text.slint";
+import { CheckBox, ScrollView } from "std-widgets.slint";
+import { Theme, MemoryRow, SecretBadge, EyeButton, InputField, ActionButton } from "common.slint";
+import { MemoryFooter } from "memory-footer.slint";
+import { SecretDialog, SecretLine } from "secret-dialog.slint";
+import { AccessPage, AgentRow } from "access.slint";
+import { AppHeader } from "app-header.slint";
+import { MessagesPage, ConversationRow, CapturedRow } from "messages.slint";
+import { RecallPage } from "recall.slint";
+import { ModelSettings } from "model-settings.slint";
+import { ModelMaintenance } from "model-maintenance.slint";
+import { ModelConfirm } from "model-confirm.slint";
+import { ModelUsage, UsageTotal, UsageDay } from "model-usage.slint";
+import { RecallRow, RecallStage, RecallOverview } from "recall-models.slint";
+import "../fonts/NotoSansSC.ttf";
+
+component Metric inherits Rectangle {
+    min-width: 0px; max-width: 100000px; preferred-width: 0px;
+    horizontal-stretch: 1;
+    in property <string> label;
+    in property <string> value;
+    in property <string> note;
+    in property <color> value-color: Theme.accent;
+    in property <bool> compact: false;
+    height: root.compact ? 108px : 140px;
+    background: transparent;
+    if !root.compact: VerticalLayout {
+        padding: 22px; spacing: 6px;
+        SelectableText { height: 18px; text: root.label; text-color: Theme.secondary; font-size: 12px; }
+        SelectableText { height: 44px; text: root.value; text-color: root.value-color; font-size: 36px; font-weight: 600; }
+        SelectableText { height: 18px; text: root.note; text-color: Theme.muted; font-size: 12px; }
+    }
+    if root.compact: VerticalLayout {
+        padding: 12px; spacing: 4px; alignment: start;
+        SelectableText { min-width: 0px; height: 18px; text: root.label; text-color: Theme.secondary; font-size: 12px; }
+        SelectableText { min-width: 0px; height: 36px; text: root.value; text-color: root.value-color; font-size: 28px; font-weight: 600; }
+        SelectableText { min-width: 0px; height: 16px; text: root.note; text-color: Theme.muted; font-size: 10px; }
+    }
+}
+
+export component MemorySummary inherits Rectangle {
+    in property <bool> compact;
+    in property <string> memory-count;
+    in property <string> secret-summary;
+    in property <string> event-count;
+    in property <string> pending-count;
+    in property <string> capture-note;
+    in property <string> index-note;
+    height: root.compact ? 108px : 140px;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    HorizontalLayout {
+        padding: 0px; spacing: 0px; cross-axis-alignment: center;
+        Metric { compact: root.compact; label: root.compact ? "记忆" : "已保存记忆"; value: root.memory-count; note: root.secret-summary; }
+        Rectangle { width: 1px; height: root.compact ? 48px : 70px; background: Theme.border; }
+        Metric { compact: root.compact; label: root.compact ? "消息" : "已采集消息"; value: root.event-count; value-color: #0f766e; note: root.compact ? "" : root.capture-note; }
+        Rectangle { width: 1px; height: root.compact ? 48px : 70px; background: Theme.border; }
+        Metric { compact: root.compact; label: root.compact ? "待同步" : "待同步记忆"; value: root.pending-count; value-color: #3873d1; note: root.compact ? "" : root.index-note; }
+    }
+}
+
+export component PageHeading inherits Rectangle {
+    min-width: 0px;
+    in property <bool> compact;
+    in property <bool> refresh-visible;
+    in property <bool> loading;
+    in property <string> title;
+    in property <string> subtitle;
+    callback refresh;
+    height: max(64px, layout.preferred-height);
+    layout := HorizontalLayout {
+        spacing: 12px; cross-axis-alignment: center;
+        VerticalLayout {
+            min-width: 0px; horizontal-stretch: 1; spacing: 6px;
+            SelectableText { min-width: 0px; height: 16px; text: root.subtitle; text-color: Theme.muted; font-size: 11px; }
+            SelectableText { min-width: 0px; height: self.preferred-height; text: root.title; text-color: Theme.ink; font-size: root.compact ? 25px : 32px; font-weight: 600; wrap: word-wrap; }
+        }
+        if root.refresh-visible: ActionButton { min-width: root.compact ? 80px : 88px; label: root.loading ? "更新中…" : "刷新"; subtle: true; disabled: root.loading; activated => { root.refresh(); } }
+    }
+}
+
+component StatusPanel inherits Rectangle {
+    in property <bool> fresh;
+    in property <bool> index-ok;
+    in property <string> capture-note;
+    in property <string> index-state;
+    in property <string> index-note;
+    height: 284px;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    VerticalLayout {
+        padding: 22px; spacing: 14px;
+        HorizontalLayout {
+            height: 20px; spacing: 8px; cross-axis-alignment: center;
+            Rectangle { width: 7px; height: 7px; border-radius: 4px; background: root.fresh ? Theme.green : #a77a2f; }
+            Text { text: root.fresh ? "空间已连接" : "等待恢复连接"; color: Theme.ink; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+        Text { text: "消息采集"; color: Theme.secondary; font-size: 12px; }
+        SelectableText { text: root.capture-note; text-color: Theme.ink; font-size: 12px; wrap: word-wrap; }
+        Rectangle { height: 2px; }
+        HorizontalLayout {
+            height: 18px; spacing: 7px; cross-axis-alignment: center;
+            Text { text: "记忆检索"; color: Theme.secondary; font-size: 12px; }
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: root.index-ok ? Theme.green : #a77a2f; }
+        }
+        SelectableText { text: root.index-state; text-color: Theme.ink; font-size: 12px; wrap: word-wrap; }
+        SelectableText { text: root.index-note; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+    }
+}
+
+export component MemoryItem inherits Rectangle {
+    in property <MemoryRow> memory;
+    in property <bool> compact;
+    callback show-secret(string, string);
+    private property <bool> expanded: false;
+    private property <string> expanded-key;
+    out property <bool> details-open: root.expanded && root.expanded-key == root.memory.memory-id + ":" + root.memory.detail;
+    callback toggle-details;
+    toggle-details => {
+        root.expanded = !root.details-open;
+        root.expanded-key = root.memory.memory-id + ":" + root.memory.detail;
+    }
+    height: layout.preferred-height;
+    min-width: 0px; max-width: 100000px; preferred-width: 0px;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    background: Theme.paper;
+    clip: true;
+    layout := VerticalLayout {
+        padding: root.compact ? 18px : 20px; spacing: 12px;
+        HorizontalLayout {
+            height: root.memory.is-secret ? 44px : 24px; spacing: 10px; cross-axis-alignment: center;
+            if root.memory.is-secret: SecretBadge {}
+            if !root.memory.is-secret: Rectangle {
+                min-width: 0px; horizontal-stretch: 0;
+                max-width: 180px;
+                preferred-width: min(180px, scope-label.preferred-width + 18px);
+                height: 24px; border-radius: 5px; background: #f0edff;
+                scope-label := SelectableText {
+                    x: 9px; width: parent.width - 18px; height: parent.height;
+                    text: root.memory.scope; text-color: #5747bd; font-size: 11px;
+                    overflow: elide;
+                    vertical-alignment: center; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.width >= 320px: SelectableText { text: root.memory.time; text-color: Theme.muted; font-size: 11px; vertical-alignment: center; overflow: elide; }
+            if root.memory.is-secret: EyeButton { disabled: !root.memory.secret-stored || root.memory.memory-id == ""; activated => { root.show-secret(root.memory.memory-id, root.memory.content); } }
+        }
+        if root.memory.is-secret: SelectableText {
+            height: 18px; text: root.memory.scope + " · " + root.memory.secret-status;
+            text-color: root.memory.secret-stored ? #087f69 : Theme.secondary;
+            font-size: 11px; }
+        SelectableText { text: root.details-open || root.memory.preview == "" ? root.memory.content : root.memory.preview; text-color: Theme.ink; font-size: 14px; wrap: word-wrap; vertical-stretch: 0; }
+        MemoryFooter {
+            agent-name: root.memory.agent-name; usage: root.memory.usage;
+            pending: root.memory.pending; expanded: root.details-open;
+            toggle-details => { root.toggle-details(); }
+        }
+        if root.details-open: VerticalLayout {
+            spacing: 8px;
+            Rectangle { height: 1px; background: Theme.border; }
+            SelectableText { text: "更新于 " + root.memory.time; text-color: Theme.muted; font-size: 11px; }
+            SelectableText { text: root.memory.detail; text-color: Theme.secondary; font-size: 11px; }
+            if root.memory.usage-detail != "": SelectableText { text: root.memory.usage-detail; text-color: Theme.secondary; font-size: 11px; }
+            SelectableText { text: "记忆 ID · " + root.memory.memory-id; text-color: Theme.muted; font-size: 11px; }
+        }
+    }
+    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+}
+
+component MemoryFeed inherits Rectangle {
+    in property <[MemoryRow]> items;
+    in property <bool> compact;
+    in property <bool> fresh;
+    in property <int> order;
+    in property <bool> busy;
+    callback show-secret(string, string);
+    height: root.items.length == 0 ? 228px : feed.preferred-height;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    clip: true;
+    if root.items.length == 0: VerticalLayout {
+        padding: 24px; alignment: center; spacing: 12px;
+        Text { text: root.busy ? "正在加载记忆…" : !root.fresh ? "记忆加载失败" : root.order == 1 ? "暂无热门记录" : root.order == 2 ? "暂无有用反馈" : "暂无记忆"; color: Theme.ink; font-size: 16px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
+        Text { text: !root.fresh ? "稍后自动重试，也可以手动刷新。" : root.order == 1 ? "近 30 天的 Agent 召回会计入这里。" : root.order == 2 ? "近 30 天被 Agent 标记有用的当前修订会显示在这里。" : "通过 Agent 保存后会显示在这里。"; color: Theme.secondary; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
+    }
+    feed := VerticalLayout {
+        visible: root.items.length > 0; padding: 1px; spacing: 0px;
+        for memory in root.items: MemoryItem { memory: memory; compact: root.compact; show-secret(id, label) => { root.show-secret(id, label); } }
+    }
+}
+
+export component MemoryColumns inherits Rectangle {
+    callback show-secret(string, string);
+    min-width: 0px; max-width: 100000px;
+    preferred-width: root.wide ? 1160px : 600px;
+    in property <bool> wide;
+    in property <bool> compact;
+    in property <int> order;
+    in property <bool> busy;
+    callback change-order(int);
+    in property <bool> fresh;
+    in property <bool> index-ok;
+    in property <string> capture-note;
+    in property <string> index-state;
+    in property <string> index-note;
+    in property <[MemoryRow]> memories;
+    out property <length> memory-column-width: memory-column.width;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    HorizontalLayout {
+        spacing: 24px; alignment: stretch; cross-axis-alignment: start;
+        memory-column := VerticalLayout {
+            width: max(0px, root.width - (root.wide ? 304px : 0px));
+            horizontal-stretch: 1; spacing: 14px; alignment: start;
+            HorizontalLayout {
+                height: 32px; spacing: 6px;
+                Text { text: root.compact ? (root.order == 0 ? "记忆" : "近30天") : (root.order == 0 ? "最近记忆" : root.order == 1 ? "近30天热门" : "近30天有用"); color: Theme.ink; font-size: root.compact ? 14px : 17px; font-weight: 600; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                for label[index] in ["最近", "热门", "有用"]: ActionButton {
+                    label: label; min-width: root.compact ? 40px : 52px; height: 30px;
+                    subtle: root.order != index; disabled: root.busy;
+                    activated => { root.change-order(index); }
+                }
+            }
+            MemoryFeed { items: root.memories; compact: root.compact; fresh: root.fresh; order: root.order; busy: root.busy; show-secret(id, label) => { root.show-secret(id, label); } }
+        }
+        if root.wide: VerticalLayout {
+            width: 280px; spacing: 14px;
+            Text { text: "运行状态"; height: 28px; color: Theme.ink; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+            StatusPanel { fresh: root.fresh; index-ok: root.index-ok; capture-note: root.capture-note; index-state: root.index-state; index-note: root.index-note; }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+export component Dashboard inherits Window {
+    in property <bool> model-usage-available;
+    in property <UsageTotal> model-usage-today;
+    in property <UsageTotal> model-usage-week;
+    in property <UsageTotal> model-usage-total;
+    in property <string> model-usage-note;
+    in property <[UsageDay]> model-usage-days;
+    in property <bool> settings-page;
+    in property <bool> transfer-page;
+    in property <bool> transfer-busy;
+    in property <bool> transfer-export-feedback;
+    in property <bool> transfer-preview-ready;
+    in property <string> transfer-file;
+    in property <string> transfer-error;
+    in property <string> transfer-notice;
+    in property <string> transfer-summary;
+    in property <string> transfer-source;
+    in property <string> transfer-stage;
+    in property <string> transfer-detail;
+    in property <string> transfer-confirm-label;
+    in property <string> transfer-page-note;
+    in property <bool> transfer-previous;
+    in property <bool> transfer-next;
+    in property <[TransferRow]> transfer-rows;
+    in-out property <string> transfer-password;
+    in property <bool> transfer-authorized;
+    in property <string> transfer-access-note;
+    in property <string> transfer-access-error;
+    in property <bool> transfer-auth-open;
+    in property <string> transfer-auth-error;
+    in property <string> transfer-auth-action;
+    in-out property <string> transfer-export-phrase;
+    in-out property <string> transfer-export-repeat;
+    in-out property <string> transfer-import-phrase;
+    callback show-transfer;
+    callback transfer-edited;
+    callback transfer-choose;
+    callback transfer-export;
+    callback transfer-preview;
+    callback transfer-confirm;
+    callback transfer-turn(int);
+    callback transfer-open-unlock;
+    callback transfer-lock;
+    callback transfer-submit-unlock;
+    callback transfer-cancel-unlock;
+    callback transfer-auth-edited;
+    callback focus-transfer-password;
+    focus-transfer-password => { transfer-unlock-dialog.focus-password(); }
+    callback return-transfer-focus;
+    return-transfer-focus => { app-header.focus-current(); }
+
+    in property <bool> can-manage-system;
+    in property <bool> model-busy;
+    in property <bool> model-testing;
+    in property <bool> model-loaded;
+    in property <bool> model-enabled;
+    in property <bool> model-has-key;
+    in property <string> model-error;
+    in property <string> model-notice;
+    in property <string> model-active-label;
+    in property <string> model-pending-label;
+    in property <string> model-progress;
+    in property <float> model-ratio;
+    in property <string> model-confirm;
+    in property <string> model-confirm-title;
+    in property <string> model-confirm-action;
+    callback focus-model-confirm;
+    focus-model-confirm => { model-dialog.focus-cancel(); }
+    in-out property <string> model-url;
+    in-out property <string> model-name: "text-embedding-v4";
+    in-out property <string> model-version;
+    in-out property <string> model-dimensions: "1024";
+    in-out property <string> model-concurrency: "4";
+    in-out property <string> model-similarity;
+    in-out property <string> model-batch-size;
+    in-out property <string> model-key;
+    in-out property <bool> model-clear-key;
+    in-out property <bool> model-advanced;
+    callback show-settings;
+    callback model-edited;
+    callback model-save;
+    callback model-test;
+    callback model-disable;
+    callback model-rebuild;
+    callback model-confirm-save;
+    callback model-cancel-confirm;
+    in property <int> memory-order;
+    callback change-memory-order(int);
+    in property <bool> messages-page: false;
+    in property <bool> messages-busy: false;
+    in property <string> messages-error;
+    in property <[string]> messages-agents;
+    in property <int> messages-agent-index;
+    in property <[ConversationRow]> messages-sessions;
+    in property <int> messages-selected: -1;
+    in property <int> messages-session-page;
+    in property <bool> messages-sessions-more;
+    in property <string> messages-thread-title;
+    in property <[CapturedRow]> messages-rows;
+    in property <int> messages-message-page;
+    in property <bool> messages-messages-more;
+    in property <string> messages-expanded;
+    in property <string> messages-full-body;
+    in property <string> messages-full-note;
+    callback show-messages;
+    callback messages-refresh;
+    callback messages-filter(int);
+    callback messages-select(int);
+    callback messages-turn-sessions(int);
+    callback messages-turn-messages(int);
+    callback messages-expand(string);
+
+    in property <bool> access-page: false;
+    in property <bool> access-busy: false;
+    in property <bool> access-loaded: false;
+    in property <bool> access-advanced-open: false;
+    in property <bool> access-editing-name: false;
+    in property <[AgentRow]> access-agents;
+    in-out property <string> access-new-name;
+    in-out property <bool> access-codex: true;
+    in property <bool> access-nushell: false;
+    in property <string> access-path-command;
+    in property <string> access-path-note;
+    in property <string> access-selected-id;
+    in-out property <string> access-selected-name;
+    in property <string> access-selected-label;
+    in property <bool> access-selected-enabled;
+    in property <bool> access-allow-secrets;
+    in property <string> access-mcp-key;
+    in property <string> access-hook-key;
+    in property <string> access-notice;
+    in property <string> access-error;
+    in property <string> access-install-command;
+    in property <string> access-init-command;
+    in property <string> access-repair-command;
+    in property <string> access-mcp-config;
+    in property <string> access-hook-config;
+    in property <string> access-agent-guidance;
+    in property <string> access-confirm-kind;
+    in property <string> access-pair-code;
+    in property <string> access-pair-client;
+    in property <string> access-pair-status;
+    in property <int> access-pair-seconds;
+    in property <string> access-pair-agent;
+    callback access-approve-pair;
+    callback show-access;
+    callback access-create;
+    callback access-refresh;
+    callback access-select(string);
+    callback access-edit-name;
+    callback access-save-name;
+    callback access-cancel-name;
+    callback access-toggle-advanced;
+    callback access-dismiss-pair;
+    callback access-toggle-enabled;
+    callback access-toggle-secrets;
+    callback access-toggle-key(string);
+    callback access-copy-key(string);
+    callback access-rotate-key(string);
+    callback access-confirm-rotate;
+    callback access-cancel-rotate;
+    callback access-copy-config(string);
+    callback access-download;
+    callback access-choose-mode(bool);
+    callback access-choose-shell(bool);
+    callback access-dismiss-notice;
+    in property <bool> secret-open: false;
+    in property <string> secret-label;
+    in-out property <string> secret-password;
+    in property <string> secret-value;
+    in property <string> secret-formatted-value;
+    in property <[SecretLine]> secret-lines;
+    in property <bool> secret-json;
+    in property <bool> secret-revealed: false;
+    in property <bool> secret-verified: false;
+    in property <bool> secret-loading: false;
+    in property <string> secret-error;
+    in property <string> secret-copy-notice;
+    callback copy-secret(bool);
+    callback show-secret(string, string);
+    callback close-secret;
+    callback toggle-secret;
+    callback return-secret-focus;
+    return-secret-focus => { app-header.focus-current(); }
+    callback focus-secret-toggle;
+    focus-secret-toggle => { secret-dialog.focus-toggle(); }
+    callback focus-secret-password;
+    focus-secret-password => { secret-dialog.focus-password(); }
+    title: root.transfer-page ? "Chromie · 炼化／夺舍" : root.settings-page ? "Chromie · 系统设置" : root.messages-page ? "Chromie · 采集消息" : root.access-page ? "Chromie · 接入" : root.recall-page ? "Chromie · 召回调试" : "Chromie · 看板";
+    preferred-width: 1240px; preferred-height: 860px;
+    min-width: 240px; min-height: 160px;
+    max-width: 100000px; max-height: 100000px;
+    background: Theme.canvas;
+    default-font-family: "Noto Sans SC"; default-font-size: 14px;
+    in property <length> viewport-width: 1240px;
+    private property <bool> compact: root.viewport-width < 680px;
+    private property <bool> wide: root.viewport-width >= 1040px;
+    private property <length> page-padding: root.compact ? 20px : max(36px, (root.viewport-width - 1160px) / 2);
+    in-out property <string> space-id;
+    in-out property <string> password;
+    in-out property <bool> remember-password: false;
+    in property <bool> recall-page: false;
+    in-out property <bool> debug-open: false;
+    in property <string> debug-meta;
+    in property <string> debug-request;
+    in property <string> debug-response;
+    callback show-dashboard;
+    callback show-recall;
+    callback reset-scroll;
+    reset-scroll => { scroll.content-y = 0px; scroll.content-x = 0px; }
+    in property <bool> unlocked: false;
+    in property <bool> loading: false;
+    in property <bool> fresh: false;
+    in property <string> space-name;
+    in property <string> message;
+    in property <string> memory-count: "—";
+    in property <string> secret-summary: "当前有效记忆";
+    in property <string> event-count: "—";
+    in property <string> pending-count: "—";
+    in property <string> capture-note: "等待首次采集";
+    in property <string> index-note: "等待首次同步";
+    in property <string> index-state: "状态待更新";
+    in property <bool> index-ok: false;
+    in property <string> update-label;
+    in property <[MemoryRow]> memories;
+    in-out property <string> recall-query;
+    in property <bool> recall-loading: false;
+    in property <bool> recall-done: false;
+    in property <string> recall-note;
+    in property <string> recall-error;
+    in property <[RecallRow]> recall-results;
+    in property <RecallOverview> recall-overview;
+    in property <[RecallStage]> recall-stages;
+    callback recall;
+    callback clear-recall;
+    callback recall-edited;
+    callback unlock;
+    callback refresh;
+    callback lock;
+    callback space-edited;
+    callback remember-changed;
+
+    VerticalLayout {
+        spacing: 0px;
+        app-header := AppHeader {
+            transfer-page: root.transfer-page; settings-page: root.settings-page; can-manage: root.can-manage-system;
+            unlocked: root.unlocked; recall-page: root.recall-page; messages-page: root.messages-page; access-page: root.access-page;
+            compact: root.viewport-width < 1040px; page-padding: root.page-padding;
+            show-brand: root.viewport-width >= 420px || !root.unlocked;
+            show-icon: !(root.can-manage-system && root.viewport-width < 380px);
+            dense: root.viewport-width < 340px;
+            show-dashboard => { root.show-dashboard(); }
+            show-recall => { root.show-recall(); }
+            show-access => { root.show-access(); } show-messages => { root.show-messages(); }
+            show-settings => { root.show-settings(); } show-transfer => { root.show-transfer(); }
+            lock => { root.lock(); }
+        }
+        scroll := ScrollView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            content-width: self.visible-width;
+            page-content := VerticalLayout {
+                width: scroll.visible-width;
+                padding-top: root.unlocked ? (root.compact ? 20px : 28px) : (root.wide ? 72px : 32px);
+                padding-left: root.page-padding; padding-right: root.page-padding;
+                padding-bottom: 40px; spacing: 28px;
+
+                if !root.unlocked: HorizontalLayout {
+                    alignment: center; spacing: root.wide ? 72px : 0px;
+                    if root.wide: VerticalLayout {
+                        height: 600px; horizontal-stretch: 1; spacing: 20px;
+                        Text { text: "Chromie"; color: Theme.accent; font-size: 40px; font-weight: 600; }
+                        Text { text: "个人记忆服务"; color: Theme.ink; font-size: 24px; font-weight: 600; }
+                        Text { text: "查看记忆、采集和同步状态。"; color: Theme.secondary; font-size: 15px; wrap: word-wrap; }
+                        Image { source: @image-url("memory-scene.svg"); height: 210px; image-fit: contain; }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                    Rectangle {
+                        width: min(408px, root.viewport-width - 2 * root.page-padding);
+                        height: 600px;
+                        border-radius: 16px; border-width: 1px; border-color: Theme.border; background: Theme.paper;
+                        VerticalLayout {
+                            padding: root.compact ? 24px : 32px; spacing: 9px;
+                            Text { text: "登录空间"; color: Theme.ink; font-size: 25px; font-weight: 600; }
+                            Text { text: "输入空间标识和密码。"; color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                            Rectangle { height: 10px; }
+                            Text { text: "空间标识"; color: Theme.ink; font-size: 12px; font-weight: 600; }
+                            InputField { value <=> root.space-id; hint: "例如 demo、work-notes"; disabled: root.loading; edited => { root.space-edited(); } }
+                            Text { text: "小写英文，可用连字符分隔"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                            Rectangle { height: 2px; }
+                            Text { text: "空间密码"; color: Theme.ink; font-size: 12px; font-weight: 600; }
+                            InputField { value <=> root.password; hint: "输入空间密码"; masked: true; disabled: root.loading; accepted => { root.unlock(); } }
+                            CheckBox {
+                                text: "记住密码"; height: 36px;
+                                checked <=> root.remember-password;
+                                enabled: !root.loading;
+                                toggled => { root.remember-changed(); }
+                            }
+                            if root.remember-password: Text { text: "密码以明文保存在此浏览器"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                            Text { text: root.message; color: #a13b33; font-size: 12px; wrap: word-wrap; min-height: 28px; }
+                            ActionButton { label: root.loading ? "登录中…" : "登录"; horizontal-stretch: 1; disabled: root.loading; activated => { root.unlock(); } }
+                            Rectangle { vertical-stretch: 1; }
+                            Text { text: "登录有效期 30 天"; color: Theme.muted; font-size: 11px; horizontal-alignment: center; wrap: word-wrap; }
+                        }
+                    }
+                }
+
+                if root.unlocked: VerticalLayout {
+                    spacing: root.compact ? 20px : 22px;
+                    PageHeading {
+                        compact: root.compact; loading: root.loading; refresh-visible: !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page;
+                        title: root.transfer-page ? "炼化／夺舍" : root.settings-page ? "系统设置" : root.messages-page ? "采集消息" : root.access-page ? (root.access-pair-status != "" ? "确认接入" : "Agent 接入") : root.recall-page ? "召回调试" : root.space-name;
+                        subtitle: root.transfer-page ? "空间迁移  /  " + root.space-id : root.settings-page ? "实例模型与检索能力" : root.messages-page ? "原始采集消息  /  " + root.space-id : root.access-page ? (root.access-pair-status != "" ? "由本机 CLI 发起 · " + root.space-id : "当前空间 · " + root.space-id) : root.recall-page ? root.space-name + "  /  " + root.space-id : "记忆概览  /  " + root.space-id;
+                        refresh => { root.refresh(); }
+                    }
+                    if root.message != "": Rectangle {
+                        height: root.compact ? 68px : 48px; border-radius: 8px; background: #fcf0ed;
+                        Text { x: 16px; width: parent.width - 32px; height: parent.height; text: root.message; color: #a13b33; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                    }
+                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: MemorySummary {
+                        compact: root.compact; memory-count: root.memory-count; secret-summary: root.secret-summary;
+                        event-count: root.event-count; pending-count: root.pending-count;
+                        capture-note: root.capture-note; index-note: root.index-note;
+                    }
+                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: MemoryColumns {
+                        width: page-content.width - 2 * root.page-padding;
+                        wide: root.wide; compact: root.compact; fresh: root.fresh;
+                        order: root.memory-order; busy: root.loading;
+                        change-order(index) => { root.change-memory-order(index); }
+                        index-ok: root.index-ok; capture-note: root.capture-note;
+                        index-state: root.index-state; index-note: root.index-note;
+                        show-secret(id, label) => { root.show-secret(id, label); }
+                        memories: root.memories;
+                    }
+                    if root.transfer-page: TransferPage {
+                        compact: root.compact; busy: root.transfer-busy; export-feedback: root.transfer-export-feedback;
+                        file-name: root.transfer-file; error: root.transfer-error; notice: root.transfer-notice;
+                        summary: root.transfer-summary; source: root.transfer-source; rows: root.transfer-rows;
+                        preview-ready: root.transfer-preview-ready;
+                        stage: root.transfer-stage; detail: root.transfer-detail; confirm-label: root.transfer-confirm-label;
+                        page-note: root.transfer-page-note; previous: root.transfer-previous; next: root.transfer-next;
+                        authorized: root.transfer-authorized; access-note: root.transfer-access-note; access-error: root.transfer-access-error;
+                        open-unlock => { root.transfer-open-unlock(); } lock => { root.transfer-lock(); }
+                        export-phrase <=> root.transfer-export-phrase;
+                        export-repeat <=> root.transfer-export-repeat; import-phrase <=> root.transfer-import-phrase;
+                        edited => { root.transfer-edited(); } choose => { root.transfer-choose(); }
+                        export => { root.transfer-export(); } preview => { root.transfer-preview(); } confirm => { root.transfer-confirm(); }
+                        turn(direction) => { root.transfer-turn(direction); }
+                    }
+                    if root.settings-page: ModelSettings {
+                        viewport-width: root.width; viewport-height: root.height;
+                        allowed: root.can-manage-system; compact: root.compact; busy: root.model-busy;
+                        loaded: root.model-loaded; enabled: root.model-enabled; has-key: root.model-has-key; testing: root.model-testing;
+                        error: root.model-error; notice: root.model-notice; active-label: root.model-active-label;
+                        pending-label: root.model-pending-label; progress: root.model-progress; ratio: root.model-ratio;
+                        url <=> root.model-url; model <=> root.model-name;
+                        version <=> root.model-version; dimensions <=> root.model-dimensions; concurrency <=> root.model-concurrency; key <=> root.model-key;
+                        similarity <=> root.model-similarity; batch-size <=> root.model-batch-size;
+                        clear-key <=> root.model-clear-key; advanced <=> root.model-advanced;
+                        edited => { root.model-edited(); } save => { root.model-save(); } test => { root.model-test(); }
+                    }
+                    if root.settings-page && root.can-manage-system: ModelUsage {
+                        compact: root.compact; available: root.model-usage-available;
+                        today: root.model-usage-today; week: root.model-usage-week; total: root.model-usage-total;
+                        note: root.model-usage-note; days: root.model-usage-days;
+                    }
+                    if root.settings-page && root.can-manage-system && root.model-enabled: ModelMaintenance {
+                        compact: root.compact; busy: root.model-busy;
+                        rebuild => { root.model-rebuild(); } disable => { root.model-disable(); }
+                    }
+                    if root.access-page: AccessPage {
+                        width: page-content.width - 2 * root.page-padding;
+                        compact: root.compact; busy: root.access-busy; loaded: root.access-loaded; agents: root.access-agents;
+                        new-name <=> root.access-new-name; codex: root.access-codex; nushell: root.access-nushell;
+                        path-command: root.access-path-command; path-note: root.access-path-note;
+                        selected-id: root.access-selected-id; selected-name <=> root.access-selected-name; selected-label: root.access-selected-label;
+                        advanced-open: root.access-advanced-open; editing-name: root.access-editing-name;
+                        selected-enabled: root.access-selected-enabled; allow-secrets: root.access-allow-secrets;
+                        mcp-key: root.access-mcp-key; hook-key: root.access-hook-key;
+                        notice: root.access-notice; error: root.access-error;
+                        install-command: root.access-install-command; init-command: root.access-init-command; repair-command: root.access-repair-command;
+                        mcp-config: root.access-mcp-config; hook-config: root.access-hook-config; confirm-kind: root.access-confirm-kind;
+                        agent-guidance: root.access-agent-guidance;
+                        pair-code: root.access-pair-code; pair-client: root.access-pair-client; pair-status: root.access-pair-status; pair-seconds: root.access-pair-seconds; pair-agent: root.access-pair-agent;
+                        approve-pair => { root.access-approve-pair(); }
+                        create => { root.access-create(); } refresh => { root.access-refresh(); } select(id) => { root.access-select(id); }
+                        edit-name => { root.access-edit-name(); } save-name => { root.access-save-name(); } cancel-name => { root.access-cancel-name(); }
+                        toggle-advanced => { root.access-toggle-advanced(); } dismiss-pair => { root.access-dismiss-pair(); } toggle-enabled => { root.access-toggle-enabled(); } toggle-secrets => { root.access-toggle-secrets(); }
+                        toggle-key(kind) => { root.access-toggle-key(kind); } copy-key(kind) => { root.access-copy-key(kind); }
+                        rotate-key(kind) => { root.access-rotate-key(kind); } confirm-rotate => { root.access-confirm-rotate(); } cancel-rotate => { root.access-cancel-rotate(); }
+                        copy-config(kind) => { root.access-copy-config(kind); } download => { root.access-download(); }
+                        choose-mode(codex) => { root.access-choose-mode(codex); }
+                        choose-shell(nushell) => { root.access-choose-shell(nushell); }
+                    }
+                    if root.messages-page: MessagesPage {
+                        width: page-content.width - 2 * root.page-padding;
+                        compact:root.compact;wide:root.wide;busy:root.messages-busy;error:root.messages-error;
+                        agents:root.messages-agents;agent-index:root.messages-agent-index;sessions:root.messages-sessions;selected:root.messages-selected;
+                        session-page:root.messages-session-page;sessions-more:root.messages-sessions-more;thread-title:root.messages-thread-title;
+                        messages:root.messages-rows;message-page:root.messages-message-page;messages-more:root.messages-messages-more;
+                        expanded:root.messages-expanded;full-body:root.messages-full-body;full-note:root.messages-full-note;
+                        refresh=>{root.messages-refresh();}filter(index)=>{root.messages-filter(index);}select(index)=>{root.messages-select(index);}
+                        turn-sessions(direction)=>{root.messages-turn-sessions(direction);}turn-messages(direction)=>{root.messages-turn-messages(direction);}expand(id)=>{root.messages-expand(id);}
+                    }
+                    if root.recall-page: RecallPage {
+                        width: page-content.width - 2 * root.page-padding;
+                        compact: root.compact;
+                        recall-query <=> root.recall-query;
+                        recall-loading: root.recall-loading; recall-done: root.recall-done;
+                        recall-note: root.recall-note; recall-error: root.recall-error;
+                        recall-results: root.recall-results;
+                        show-secret(id, label) => { root.show-secret(id, label); }
+                        overview: root.recall-overview; stages: root.recall-stages;
+                        recall => { root.recall(); }
+                        clear-recall => { root.clear-recall(); }
+                        recall-edited => { root.recall-edited(); }
+                        debug-open <=> root.debug-open;
+                        debug-meta: root.debug-meta; debug-request: root.debug-request; debug-response: root.debug-response;
+                    }
+                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page && !root.wide: StatusPanel { fresh: root.fresh; index-ok: root.index-ok; capture-note: root.capture-note; index-state: root.index-state; index-note: root.index-note; }
+                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: root.update-label; color: Theme.muted; font-size: 11px; overflow: elide; }
+                        Rectangle { horizontal-stretch: 1; }
+                        if !root.compact: Text { text: "每 15 秒自动更新"; color: Theme.muted; font-size: 11px; }
+                    }
+                }
+            }
+        }
+    }
+    if root.unlocked && root.access-page && (root.access-error != "" || root.access-notice != ""): Rectangle {
+        width: min(680px, root.width - 32px); height: root.compact ? 76px : 52px;
+        x: (root.width - self.width) / 2; y: root.height - self.height - 16px;
+        border-radius: 10px; border-width: 1px; border-color: root.access-error != "" ? #efc7c1 : #b7e3d4;
+        background: root.access-error != "" ? #fcf0ed : #e5f6f0;
+        HorizontalLayout {
+            padding: 12px; spacing: 10px; cross-axis-alignment: center;
+            SelectableText { text: root.access-error != "" ? root.access-error : root.access-notice; text-color: root.access-error != "" ? #a13b33 : #087f69; font-size: 12px; wrap: word-wrap; }
+            ActionButton { label: "关闭"; subtle: true; min-width: 52px; height: 32px; activated => { root.access-dismiss-notice(); } }
+        }
+    }
+    secret-dialog := SecretDialog {
+        visible: root.secret-open; x: 0px; y: 0px; width: root.width; height: root.height;
+        label: root.secret-label; password <=> root.secret-password; value: root.secret-value; formatted-value: root.secret-formatted-value; lines: root.secret-lines; json: root.secret-json;
+        revealed: root.secret-revealed; loading: root.secret-loading; error: root.secret-error;
+        copy-notice: root.secret-copy-notice; copy(formatted) => { root.copy-secret(formatted); }
+        verified: root.secret-verified;
+        close => { root.close-secret(); }
+        toggle => { root.toggle-secret(); }
+    }
+    model-dialog := ModelConfirm {
+        visible: root.unlocked && root.settings-page && root.model-confirm != "";
+        width: root.width; height: root.height;
+        title: root.model-confirm-title; description: root.model-confirm; action: root.model-confirm-action;
+        cancel => { root.model-cancel-confirm(); }
+        confirm => { root.model-confirm-save(); }
+    }
+    transfer-unlock-dialog := TransferUnlockDialog {
+        visible: root.unlocked && root.transfer-page && root.transfer-auth-open;
+        width: root.width; height: root.height;
+        space: root.space-id; password <=> root.transfer-password; busy: root.transfer-busy;
+        error: root.transfer-auth-error; action: root.transfer-auth-action;
+        cancel => { root.transfer-cancel-unlock(); } submit => { root.transfer-submit-unlock(); } edited => { root.transfer-auth-edited(); }
+    }
+
+}

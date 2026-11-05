@@ -1,0 +1,222 @@
+import { Theme, InputField, ActionButton } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+import { ScrollView } from "std-widgets.slint";
+export struct TransferRow { label:string, kind:string, status:string, reason:string, conflict:bool }
+
+component PreviewPager inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> busy;
+    in property <string> note;
+    in property <bool> previous;
+    in property <bool> next;
+    callback turn(int);
+    min-width: 0px;
+    height: root.compact ? 66px : 36px;
+    VerticalLayout {
+        spacing: 8px;
+        if root.compact: Text { text: root.note; color: Theme.secondary; font-size: 12px; }
+        HorizontalLayout {
+            spacing: 8px; cross-axis-alignment: center;
+            if !root.compact: Text { text: root.note; color: Theme.secondary; font-size: 12px; }
+            Rectangle { horizontal-stretch: 1; }
+            if root.previous || root.next: ActionButton { label: "上一页"; min-width: 70px; height: 36px; subtle: true; disabled: root.busy || !root.previous; activated => { root.turn(-1); } }
+            if root.previous || root.next: ActionButton { label: "下一页"; min-width: 70px; height: 36px; subtle: true; disabled: root.busy || !root.next; activated => { root.turn(1); } }
+        }
+    }
+}
+
+export component TransferPage inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> busy;
+    in property <bool> export-feedback;
+    in property <string> file-name;
+    in property <string> error;
+    in property <string> notice;
+    in property <string> summary;
+    in property <string> source;
+    in property <string> stage;
+    in property <string> detail;
+    in property <string> confirm-label;
+    in property <string> page-note;
+    in property <bool> previous;
+    in property <bool> next;
+    in property <bool> preview-ready;
+    in property <[TransferRow]> rows;
+    in property <bool> authorized;
+    in property <string> access-note;
+    in property <string> access-error;
+    in-out property <string> export-phrase;
+    in-out property <string> export-repeat;
+    in-out property <string> import-phrase;
+    callback edited;
+    callback choose;
+    callback export;
+    callback preview;
+    callback confirm;
+    callback turn(int);
+    callback open-unlock;
+    callback lock;
+    min-width: 0px;
+    height: layout.preferred-height;
+    background: transparent;
+    layout := VerticalLayout {
+        spacing: 20px;
+        Rectangle {
+            height: identity.preferred-height; background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+            identity := VerticalLayout {
+                padding: root.compact ? 18px : 24px; spacing: 12px;
+                SelectableText { text: "只带走核心记忆"; text-color: Theme.ink; font-size: 18px; font-weight: 600; }
+                SelectableText { text: "包含当前记忆、Secret 及格式说明。采集消息、历史修订、统计和模型向量留在原空间。迁移包使用独立口令加密，请妥善保存口令。"; text-color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                HorizontalLayout { spacing: 12px; cross-axis-alignment: center;
+                    VerticalLayout { horizontal-stretch: 1; spacing: 5px;
+                        Text { text: root.authorized ? "迁移已解锁" : "迁移已锁定"; color: root.authorized ? Theme.green : Theme.ink; font-size: 14px; font-weight: 600; }
+                        SelectableText { text: root.access-note; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+                    }
+                    ActionButton { label: root.authorized ? "立即锁定" : "解锁"; subtle: true; min-width: 96px; disabled: root.busy;
+                        activated => { if root.authorized { root.lock(); } else { root.open-unlock(); } } }
+                }
+                if root.access-error != "": SelectableText { text: root.access-error; text-color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+            }
+        }
+        Rectangle {
+            height: export-form.preferred-height; background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+            export-form := VerticalLayout {
+                padding: root.compact ? 18px : 24px; spacing: 14px;
+                SelectableText { text: "炼化"; text-color: Theme.ink; font-size: 20px; font-weight: 600; }
+                SelectableText { text: "将当前空间的记忆打包，下载到你的设备。"; text-color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                SelectableText { text: "迁移口令"; text-color: Theme.secondary; font-size: 12px; }
+                InputField { value <=> root.export-phrase; masked: true; disabled: root.busy; hint: "设置迁移口令，至少 8 字节"; }
+                SelectableText { text: "确认迁移口令"; text-color: Theme.secondary; font-size: 12px; }
+                InputField { value <=> root.export-repeat; masked: true; disabled: root.busy; hint: "再次输入迁移口令"; }
+                HorizontalLayout {
+                    ActionButton { label: root.busy ? "正在处理…" : "顷刻炼化!"; width: 144px;
+                        disabled: root.busy;
+                        activated => { root.export(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if root.export-feedback && root.error != "": SelectableText { text: root.error; text-color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+                if root.export-feedback && root.notice != "": SelectableText { text: root.notice; text-color: Theme.green; font-size: 13px; wrap: word-wrap; }
+            }
+        }
+        Rectangle {
+            height: import-form.preferred-height; background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+            import-form := VerticalLayout {
+                padding: root.compact ? 18px : 24px; spacing: 14px;
+                SelectableText { text: "夺舍"; text-color: Theme.ink; font-size: 20px; font-weight: 600; }
+                SelectableText { text: "追加到当前空间。相同记忆跳过，冲突内容保留现状；预览后再确认。"; text-color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                HorizontalLayout {
+                    cross-axis-alignment: center; spacing: 12px;
+                    ActionButton { label: "选择迁移包"; subtle: true; width: 128px; disabled: root.busy; activated => { root.choose(); } }
+                    Text { text: root.file-name == "" ? "尚未选择 · 最多 65 MiB" : root.file-name; color: Theme.secondary; font-size: 12px; overflow: elide; wrap: no-wrap; horizontal-stretch: 1; }
+                }
+                SelectableText { text: "迁移包口令"; text-color: Theme.secondary; font-size: 12px; }
+                InputField { value <=> root.import-phrase; masked: true; disabled: root.busy; hint: "输入迁移包口令"; edited => { root.edited(); } }
+                HorizontalLayout {
+                    ActionButton { label: root.busy ? "正在处理…" : "预览内容"; subtle: true; width: 128px;
+                        disabled: root.busy;
+                        activated => { root.preview(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if !root.export-feedback && root.error != "": SelectableText { text: root.error; text-color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+                if !root.export-feedback && root.notice != "": SelectableText { text: root.notice; text-color: Theme.green; font-size: 13px; wrap: word-wrap; }
+                if root.summary != "": Rectangle {
+                    height: preview-layout.preferred-height; background: #f7f5ff; border-radius: 10px;
+                    preview-layout := VerticalLayout {
+                        padding: 16px; spacing: 12px;
+                        SelectableText { text: root.source; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+                        SelectableText { text: root.stage; text-color: root.preview-ready ? Theme.accent : Theme.ink; font-size: 17px; font-weight: 600; wrap: word-wrap; }
+                        SelectableText { text: root.summary; text-color: Theme.ink; font-size: 15px; font-weight: 600; wrap: word-wrap; }
+                        SelectableText { text: root.detail; text-color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                        HorizontalLayout { alignment: start;
+                            ActionButton { label: root.confirm-label; min-width: 164px; subtle: !root.preview-ready; disabled: root.busy || !root.preview-ready; activated => { root.confirm(); } }
+                        }
+                        if root.page-note != "": PreviewPager {
+                            compact: root.compact; busy: root.busy; note: root.page-note;
+                            previous: root.previous; next: root.next; turn(direction) => { root.turn(direction); }
+                        }
+                        for row in root.rows: Rectangle {
+                            height: row-layout.preferred-height; background: Theme.paper; border-radius: 8px;
+                            row-layout := VerticalLayout {
+                                padding: 12px; spacing: 6px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: row.kind; color: Theme.secondary; font-size: 11px; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    Text { text: row.status; color: row.conflict ? Theme.danger : Theme.green; font-size: 11px; }
+                                }
+                                SelectableText { text: row.label; text-color: Theme.ink; font-size: 13px; wrap: word-wrap; }
+                                SelectableText { text: row.reason; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                            }
+                        }
+                        if root.previous || root.next: PreviewPager {
+                            compact: root.compact; busy: root.busy; note: root.page-note;
+                            previous: root.previous; next: root.next; turn(direction) => { root.turn(direction); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component TransferUnlockDialog inherits Rectangle {
+    in property <string> space;
+    in-out property <string> password;
+    in property <bool> busy;
+    in property <string> error;
+    in property <string> action;
+    callback submit;
+    callback cancel;
+    callback edited;
+    callback focus-password;
+    focus-password => { password-field.focus(); }
+    background: #25254266;
+    forward-focus: keyboard;
+    keyboard := FocusScope {
+        width: parent.width; height: parent.height;
+        key-pressed(event) => {
+            if event.text == Key.Escape { if !root.busy { root.cancel(); } accept }
+            else if event.text == Key.Tab {
+                if !root.busy {
+                    if event.modifiers.shift {
+                        if password-field.focused { submit-button.focus(); }
+                        else if submit-button.focused { cancel-button.focus(); }
+                        else { password-field.focus(); }
+                    } else {
+                        if password-field.focused { cancel-button.focus(); }
+                        else if cancel-button.focused { submit-button.focus(); }
+                        else { password-field.focus(); }
+                    }
+                }
+                accept
+            } else { reject }
+        }
+        TouchArea { width: parent.width; height: parent.height; clicked => { if !root.busy { root.cancel(); } } }
+        panel := Rectangle {
+            width: min(480px,max(0px,root.width - 32px));
+            height: min(form.preferred-height,max(0px,root.height - 32px));
+            x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+            background: Theme.paper; border-radius: 16px; clip: true;
+            TouchArea { width: parent.width; height: parent.height; clicked => { } }
+            scroll := ScrollView {
+                width: parent.width; height: parent.height;
+                horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+                form := VerticalLayout {
+                    width: scroll.visible-width; padding: root.width < 360px ? 18px : 26px; spacing: 14px;
+                    SelectableText { text: "解锁迁移"; text-color: Theme.ink; font-size: 20px; font-weight: 600; }
+                    SelectableText { text: "当前空间 · " + root.space; text-color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                    SelectableText { text: "验证空间密码后，10 分钟内可炼化、预览和确认夺舍。刷新或切页可继续，无需重复输入。"; text-color: Theme.secondary; font-size: 14px; wrap: word-wrap; }
+                    Text { text: "空间密码"; color: Theme.ink; font-size: 13px; font-weight: 600; }
+                    password-field := InputField { value <=> root.password; masked: true; disabled: root.busy; hint: "输入当前空间密码";
+                        accepted => { if !root.busy { root.submit(); } } edited => { root.edited(); } }
+                    if root.error != "": SelectableText { text: root.error; text-color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+                    HorizontalLayout { spacing: 10px;
+                        Rectangle { horizontal-stretch: 1; }
+                        cancel-button := ActionButton { label: "取消"; subtle: true; min-width: 72px; disabled: root.busy; activated => { root.cancel(); } }
+                        submit-button := ActionButton { label: root.busy ? "正在解锁…" : root.action; min-width: 148px; disabled: root.busy; activated => { root.submit(); } }
+                    }
+                }
+            }
+        }
+    }
+}

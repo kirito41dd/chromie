@@ -1,0 +1,20 @@
+/target
+/.dev.env
+/.env
+/.env.*
+!/.env.example
+/.local/
+/web/pkg/
+# 质量评测执行器、数据与产物只保留本地；产品回归测试正常提交。
+/eval/
+/tests/retrieval_threshold_eval.rs
+/config/
+/data/
+/packaging/clients/*
+!/packaging/clients/.gitkeep
+.DS_Store
+__pycache__/
+*.py[cod]
+*.pem
+*.key
+*.chromie

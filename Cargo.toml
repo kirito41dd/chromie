@@ -1,0 +1,75 @@
+[package]
+name = "chromie"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "面向个人私有化部署的跨设备、跨 Agent 记忆与加密 Secret 服务"
+repository = "https://github.com/kirito41dd/chromie"
+default-run = "chromie"
+
+[workspace]
+members = ["migration", "web"]
+resolver = "3"
+
+[[bin]]
+name = "chromie"
+path = "src/main.rs"
+required-features = ["client"]
+
+[[bin]]
+name = "chromie-server"
+path = "src/bin/chromie-server.rs"
+required-features = ["server"]
+
+[features]
+default = ["client", "server"]
+client = ["dep:rpassword", "dep:toml_edit", "dep:rustix", "tokio/process"]
+server = [
+    "dep:age",
+    "dep:aes-gcm",
+    "dep:argon2",
+    "dep:axum",
+    "dep:cookie",
+    "dep:hkdf",
+    "dep:jsonwebtoken",
+    "dep:migration",
+    "dep:qdrant-client",
+    "dep:rmcp",
+    "dep:sea-orm",
+    "dep:tracing-subscriber",
+    "p256/arithmetic",
+    "p256/pkcs8",
+    "p256/pem",
+    "p256/getrandom",
+]
+
+[dependencies]
+age = { optional = true, version = "0.12.1", default-features = false }
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "color", "error-context", "unicode"] }
+aes-gcm = { optional = true, version = "0.11.1", default-features = false, features = ["aes", "alloc", "getrandom", "zeroize"] }
+argon2 = { optional = true, version = "0.6.0", default-features = false, features = ["alloc", "getrandom", "password-hash", "zeroize"] }
+axum = { optional = true, version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "query", "multipart"] }
+cookie = { optional = true, version = "0.18.2", default-features = false }
+hkdf = { optional = true, version = "0.13.0", default-features = false }
+jsonwebtoken = { optional = true, version = "11.1.0", default-features = false, features = ["aws_lc_rs", "use_pem"] }
+migration = { optional = true, path = "migration" }
+p256 = { version = "0.14.0", default-features = false, features = ["std"] }
+qdrant-client = { optional = true, version = "1.20.0", default-features = false, features = ["serde", "uuid"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "query"] }
+rmcp = { optional = true, version = "3.7.0", default-features = false, features = ["macros", "server", "transport-streamable-http-server"] }
+rpassword = { optional = true, version = "7.5.4", default-features = false }
+schemars = { version = "1.2.3", default-features = false, features = ["std", "derive", "uuid1"] }
+sea-orm = { optional = true, version = "2.0.4", default-features = false, features = ["macros", "sqlx-mysql", "runtime-tokio-rustls", "with-json", "with-time", "with-uuid"] }
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+sha2 = { version = "0.11.1", default-features = false }
+thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
+time = { version = "0.3.55", default-features = false, features = ["std", "serde-well-known"] }
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync", "time", "signal", "fs"] }
+toml_edit = { optional = true, version = "0.25.17", default-features = false, features = ["parse", "display"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { optional = true, version = "0.3.23", default-features = false, features = ["std", "fmt", "env-filter"] }
+uuid = { version = "1.29.0", default-features = false, features = ["std", "v7", "serde"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { optional = true, version = "=1.1.5", default-features = false, features = ["std", "termios", "process"] }

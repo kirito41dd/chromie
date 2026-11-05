@@ -1,0 +1,55 @@
+import { Theme, ActionButton } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+
+component MaintenanceRow inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> busy;
+    in property <string> title;
+    in property <string> description;
+    in property <string> action;
+    callback activated;
+    min-width: 0px;
+    height: layout.preferred-height;
+    layout := VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 24px; cross-axis-alignment: center;
+            VerticalLayout {
+                spacing: 6px;
+                SelectableText { text: root.title; text-color: Theme.ink; font-size: 14px; font-weight: 600; wrap: word-wrap; }
+                SelectableText { text: root.description; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+            }
+            if !root.compact: ActionButton { label: root.action; width: 104px; height: 36px; danger: true; subtle: true; disabled: root.busy; activated => { root.activated(); } }
+        }
+        if root.compact: HorizontalLayout {
+            ActionButton { label: root.action; width: 104px; height: 36px; danger: true; subtle: true; disabled: root.busy; activated => { root.activated(); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+}
+
+export component ModelMaintenance inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> busy;
+    callback rebuild;
+    callback disable;
+    min-width: 0px;
+    height: layout.preferred-height;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    layout := VerticalLayout {
+        padding: root.compact ? 18px : 24px; spacing: 20px;
+        SelectableText { text: "索引维护"; text-color: Theme.ink; font-size: 18px; font-weight: 600; }
+        SelectableText { text: "临时故障会自动重试，通常无需手动维护。以下操作影响全部空间。"; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+        MaintenanceRow {
+            compact: root.compact; busy: root.busy;
+            title: "重建语义索引"; description: "使用已保存的模型配置，重新处理全部有效记忆。会产生模型调用费用。";
+            action: "重建索引"; activated => { root.rebuild(); }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+        MaintenanceRow {
+            compact: root.compact; busy: root.busy;
+            title: "停用语义检索"; description: "切回关键词检索。记忆保存、采集和 Secret 继续可用。";
+            action: "停用"; activated => { root.disable(); }
+        }
+    }
+}

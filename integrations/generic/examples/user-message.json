@@ -1,0 +1,7 @@
+{
+  "session_id": "fictional-session",
+  "role": "user",
+  "body": "虚构的用户消息，用于验证 Chromie 采集程序。",
+  "turn_id": null,
+  "project_key": "demo-project"
+}

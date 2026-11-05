@@ -1,0 +1,7 @@
+{
+  "session_id": "fictional-session",
+  "role": "assistant",
+  "body": "虚构的助手最终回复，用于验证 Chromie 采集程序。",
+  "turn_id": null,
+  "project_key": "demo-project"
+}

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "hooks": [{
+      "type": "command",
+      "command": "\"${PLUGIN_ROOT}/scripts/capture.sh\"",
+      "timeout": 5,
+      "statusMessage": "Chromie 正在保存用户消息"
+    }] }],
+    "Stop": [{ "hooks": [{
+      "type": "command",
+      "command": "\"${PLUGIN_ROOT}/scripts/capture.sh\"",
+      "timeout": 5,
+      "statusMessage": "Chromie 正在保存最终回复"
+    }] }]
+  }
+}

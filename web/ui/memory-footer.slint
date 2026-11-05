@@ -1,0 +1,83 @@
+import { SelectableText } from "selectable-text.slint";
+import { Theme } from "common.slint";
+
+component DetailsButton inherits Rectangle {
+    in property <bool> expanded;
+    callback activated;
+    width: 36px; height: 24px;
+    border-radius: 4px;
+    background: touch.has-hover ? #f0edff : transparent;
+    border-width: keyboard.has-focus ? 1px : 0px;
+    border-color: Theme.accent;
+    forward-focus: keyboard;
+    accessible-role: button;
+    accessible-label: root.expanded ? "收起详情" : "展开详情";
+    accessible-action-default => { root.activated(); }
+    Text {
+        text: root.expanded ? "收起" : "详情"; color: Theme.secondary; font-size: 11px;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    keyboard := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if !event.repeat && (event.text == Key.Return || event.text == " ") {
+                root.activated(); accept
+            } else { reject }
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { keyboard.focus(); root.activated(); }
+    }
+}
+
+export component MemoryFooter inherits Rectangle {
+    min-width: 0px; max-width: 100000px; preferred-width: 0px; horizontal-stretch: 1;
+    in property <string> agent-name;
+    in property <string> usage;
+    in property <bool> pending;
+    in property <bool> expanded;
+    callback toggle-details;
+    out property <bool> stacked: root.width < 520px;
+    out property <length> status-right: status.x + status.width;
+    out property <length> details-right: details.x + details.width;
+    out property <length> agent-left: agent.x;
+    out property <length> status-top: status.y;
+    out property <length> details-top: details.y;
+    height: root.stacked && root.usage != "" ? 44px : 24px;
+    // 所有辅助信息使用同一字号；窄屏让完整统计独占一行。
+    agent := SelectableText {
+        x: 0px; y: 0px; height: 24px;
+        width: root.stacked ? max(0px, status.x - 12px) : min(160px, max(0px, root.width - 390px));
+        text: root.agent-name; text-color: Theme.secondary; font-size: 11px;
+        overflow: elide; vertical-alignment: center;
+    }
+    statistics := SelectableText {
+        x: root.stacked ? 0px : agent.width + 12px;
+        y: root.stacked ? 26px : 0px;
+        width: root.stacked ? parent.width : max(0px, status.x - self.x - 16px);
+        height: root.stacked ? 18px : 24px;
+        text: root.usage; text-color: Theme.muted; font-size: 11px;
+        overflow: elide;
+        horizontal-alignment: root.stacked ? left : right;
+        vertical-alignment: center;
+    }
+    status := Rectangle {
+        x: details.x - self.width - 12px; y: 0px; width: 54px; height: 24px;
+        HorizontalLayout {
+            spacing: 6px; cross-axis-alignment: center;
+            Rectangle { width: 5px; height: 5px; border-radius: 3px; background: root.pending ? #a77a2f : Theme.green; }
+            SelectableText {
+                text: root.pending ? "待同步" : "已同步";
+                text-color: root.pending ? #946c28 : Theme.muted;
+                font-size: 11px; height: 24px; vertical-alignment: center;
+            }
+        }
+    }
+    details := DetailsButton {
+        x: max(0px, parent.width - self.width);
+        y: 0px;
+        expanded: root.expanded;
+        activated => { root.toggle-details(); }
+    }
+}

@@ -1,0 +1,31 @@
+name: chromie-dev
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: chromie
+      MYSQL_USER: chromie
+      MYSQL_PASSWORD: ${CHROMIE_MYSQL_PASSWORD:?请配置本地开发密码}
+      MYSQL_ROOT_PASSWORD: ${CHROMIE_MYSQL_ROOT_PASSWORD:?请配置本地开发 root 密码}
+    ports:
+      - "127.0.0.1:13306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+      QDRANT__SERVICE__API_KEY: ${CHROMIE_QDRANT_API_KEY:?请配置本地 Qdrant 密钥}
+    ports:
+      - "127.0.0.1:16333:6333"
+      - "127.0.0.1:16334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+volumes:
+  mysql-data:
+  qdrant-data:

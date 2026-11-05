@@ -1,0 +1,176 @@
+import { CheckBox, ScrollView } from "std-widgets.slint";
+import { Theme, InputField, ActionButton } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+import { SimilarityHelp, SimilarityInfo } from "similarity-help.slint";
+
+export component ModelSettings inherits Rectangle {
+    in property <bool> allowed;
+    in property <bool> compact;
+    in property <length> viewport-width: root.width;
+    in property <length> viewport-height: 720px;
+    in property <bool> busy;
+    in property <bool> testing;
+    in property <bool> loaded;
+    in property <bool> enabled;
+    in property <bool> has-key;
+    in property <string> error;
+    in property <string> notice;
+    in property <string> active-label;
+    in property <string> pending-label;
+    in property <string> progress;
+    in property <float> ratio;
+    in-out property <string> url;
+    in-out property <string> model;
+    in-out property <string> version;
+    in-out property <string> dimensions;
+    in-out property <string> concurrency;
+    in-out property <string> similarity;
+    in-out property <string> batch-size;
+    private property <bool> similarity-help-open;
+    private property <bool> help-hover;
+    private property <length> help-x;
+    private property <length> help-y;
+    private property <length> help-anchor-height;
+    private property <bool> has-recommendation: root.model == "text-embedding-v4" && root.version == "" && root.dimensions == "1024";
+    in-out property <string> key;
+    in-out property <bool> clear-key;
+    in-out property <bool> advanced;
+    callback edited;
+    callback save;
+    callback test;
+    min-width: 0px;
+    height: layout.preferred-height;
+    background: transparent;
+    layout := VerticalLayout {
+        spacing: 20px;
+        if !root.allowed: SelectableText { text: "请登录初始管理空间后打开系统设置。"; text-color: Theme.secondary; font-size: 14px; wrap: word-wrap; }
+        if root.allowed: VerticalLayout {
+            spacing: 20px;
+            Rectangle {
+                height: status.preferred-height; background: Theme.paper;
+                border-radius: 12px; border-width: 1px; border-color: Theme.border;
+                status := VerticalLayout {
+                    padding: root.compact ? 18px : 24px; spacing: 12px;
+                    HorizontalLayout {
+                        spacing: 10px; cross-axis-alignment: center;
+                        Rectangle { width: 7px; height: 7px; border-radius: 4px; background: root.enabled ? Theme.green : Theme.muted; }
+                        SelectableText { text: root.loaded ? (root.enabled ? "语义检索" : "关键词检索") : "正在读取模型配置…"; text-color: Theme.ink; font-size: 16px; font-weight: 600; }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    SelectableText { text: root.active-label; text-color: Theme.secondary; font-size: 13px; wrap: word-wrap; }
+                    if root.pending-label != "": SelectableText { text: root.pending-label; text-color: Theme.accent; font-size: 13px; wrap: word-wrap; }
+                    if root.enabled && root.ratio < 1: Rectangle {
+                        height: 5px; border-radius: 3px; background: #eeedf6; clip: true;
+                        Rectangle { width: parent.width * root.ratio; height: parent.height; border-radius: 3px; background: Theme.accent; }
+                    }
+                    if root.enabled && root.progress != "": SelectableText { text: root.progress; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+                    if !root.enabled: SelectableText { text: "未启用模型时，记忆保存、关键词召回和 Secret 可照常使用。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                }
+            }
+            Rectangle {
+                height: form.preferred-height; background: Theme.paper;
+                border-radius: 12px; border-width: 1px; border-color: Theme.border;
+                form := VerticalLayout {
+                    padding: root.compact ? 18px : 24px; spacing: 14px;
+                    SelectableText { text: "向量模型"; text-color: Theme.ink; font-size: 18px; font-weight: 600; }
+                    SelectableText { text: "配置对整个实例生效，各空间的数据仍独立。使用 OpenAI 兼容的 embeddings 接口。"; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+                    SelectableText { text: "服务地址"; text-color: Theme.secondary; font-size: 12px; }
+                    InputField { value <=> root.url; hint: "https://服务地址/v1"; disabled: root.busy; edited => { root.edited(); } }
+                    HorizontalLayout {
+                        spacing: 20px;
+                        VerticalLayout {
+                            spacing: 8px;
+                            SelectableText { text: "模型名称"; text-color: Theme.secondary; font-size: 12px; }
+                            InputField { value <=> root.model; hint: "text-embedding-v4"; disabled: root.busy; edited => { root.similarity = ""; root.batch-size = ""; root.edited(); } }
+                        }
+                        if !root.compact: VerticalLayout {
+                            width: 160px; spacing: 8px;
+                            SelectableText { text: "最大并发"; text-color: Theme.secondary; font-size: 12px; }
+                            InputField { value <=> root.concurrency; hint: "4"; disabled: root.busy; edited => { root.edited(); } }
+                        }
+                    }
+                    if root.compact: VerticalLayout {
+                        spacing: 8px;
+                        SelectableText { text: "最大并发"; text-color: Theme.secondary; font-size: 12px; }
+                        HorizontalLayout {
+                            InputField { width: 120px; value <=> root.concurrency; hint: "4"; disabled: root.busy; edited => { root.edited(); } }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                    SelectableText { text: "并发 1～64，同一模型的所有业务共享。仅调整并发不会重建索引。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                    SelectableText { text: "API Key" + (root.has-key ? " · 已保存，留空沿用" : " · 本地服务可留空"); text-color: Theme.secondary; font-size: 12px; }
+                    InputField { value <=> root.key; hint: root.has-key ? "已加密保存" : "输入 API Key"; masked: true; disabled: root.busy; edited => { root.edited(); } }
+                    SelectableText { text: "启用后，各空间的记忆正文和搜索问题将发送到此服务。Secret 仅处理公开说明，原始对话不参与本次处理。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        ActionButton { label: root.advanced ? "收起高级设置" : "高级设置"; min-width: 120px; subtle: true; activated => { root.advanced = !root.advanced; } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if root.advanced: VerticalLayout {
+                        spacing: 12px;
+                        SelectableText { text: "向量维度"; text-color: Theme.secondary; font-size: 12px; }
+                        InputField { value <=> root.dimensions; hint: "1024"; disabled: root.busy; edited => { root.similarity = ""; root.batch-size = ""; root.edited(); } }
+                        SelectableText { text: "模型版本（可选）"; text-color: Theme.secondary; font-size: 12px; }
+                        InputField { value <=> root.version; hint: "服务商的实际版本或权重标识"; disabled: root.busy; edited => { root.similarity = ""; root.batch-size = ""; root.edited(); } }
+                        SelectableText { text: "每批最多文本数"; text-color: Theme.secondary; font-size: 13px; }
+                        HorizontalLayout {
+                            spacing: 12px; cross-axis-alignment: center;
+                            InputField { width: 128px; value <=> root.batch-size; hint: root.model == "text-embedding-v4" ? "自动 · 10" : "自动 · 1"; disabled: root.busy; edited => { root.edited(); } }
+                            SelectableText { text: "1～10 段"; text-color: Theme.muted; font-size: 12px; }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        SelectableText { text: "留空自动选择；其他模型默认 1。只影响后台请求，不重建索引；在线查询立即单条发送。测试连接会验证当前批大小。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 8px; cross-axis-alignment: center;
+                            Text { text: "相似度下限"; color: Theme.secondary; font-size: 13px; }
+                            Rectangle { width: 72px; height: 24px; border-radius: 5px; background: #f0edff;
+                                Text { text: "专业参数"; color: #6759b9; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                            SimilarityInfo { open <=> root.similarity-help-open;
+                                activated => { root.similarity-help-open = !root.similarity-help-open; }
+                                help-hover(hovered, x, y, h) => { root.help-hover = hovered; root.help-x = x; root.help-y = y; root.help-anchor-height = h; }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px; cross-axis-alignment: center;
+                            InputField { width: 128px; value <=> root.similarity; hint: root.has-recommendation ? "自动 · 0.56" : "自动 · 关闭"; disabled: root.busy; edited => { root.edited(); } }
+                            SelectableText { text: root.has-recommendation ? "推荐 0.56" : "暂无评测推荐值"; font-size: 13px; text-color: root.has-recommendation ? Theme.accent : Theme.muted; wrap: word-wrap; }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        SelectableText { text: "留空使用自动值；0 关闭过滤。越高越严格，可能减少有效召回。"; font-size: 12px; text-color: Theme.muted; wrap: word-wrap; }
+                        if root.similarity-help-open: SimilarityHelp { }
+                        if root.has-key: CheckBox { text: "移除已保存的 Key"; checked <=> root.clear-key; enabled: !root.busy; toggled => { root.edited(); } }
+                        SelectableText { text: "仅修改地址或 Key 可沿用索引，请核对新服务的模型与编码方式相同。同名模型更换权重后可强制重建。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                    }
+                    if root.error != "": SelectableText { text: root.error; text-color: #a13d3d; font-size: 13px; wrap: word-wrap; }
+                    if root.notice != "": SelectableText { text: root.notice; text-color: #087f69; font-size: 13px; wrap: word-wrap; }
+                    if !root.compact: HorizontalLayout {
+                        spacing: 10px;
+                        ActionButton { label: root.testing ? "测试中…" : "测试连接"; min-width: 110px; subtle: true; disabled: root.busy || !root.loaded; activated => { root.test(); } }
+                        ActionButton { label: root.busy && !root.testing ? "正在保存…" : root.enabled ? "保存设置" : "保存并启用"; min-width: 140px; disabled: root.busy || !root.loaded; activated => { root.save(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if root.compact: VerticalLayout {
+                        spacing: 10px;
+                        ActionButton { label: root.testing ? "测试中…" : "测试连接"; subtle: true; disabled: root.busy || !root.loaded; activated => { root.test(); } }
+                        ActionButton { label: root.busy && !root.testing ? "正在保存…" : root.enabled ? "保存设置" : "保存并启用"; min-width: 140px; disabled: root.busy || !root.loaded; activated => { root.save(); } }
+                    }
+                }
+            }
+        }
+    }
+    // 画布内浮层避开窗口边界；不使用会向窗口外溢出的原生 Tooltip。
+    if root.advanced && root.help-hover && !root.similarity-help-open: Rectangle {
+        z: 100; clip: true;
+        width: min(360px, root.viewport-width - 24px);
+        height: min(help-body.height, max(root.help-y - 72px, root.viewport-height - root.help-y - root.help-anchor-height - 12px));
+        x: max(12px, min(root.help-x, root.viewport-width - self.width - 12px)) - root.absolute-position.x;
+        y: (root.help-y >= self.height + 72px ? root.help-y - self.height - 8px : root.help-y + root.help-anchor-height + 8px) - root.absolute-position.y;
+        border-radius: 10px; background: Theme.paper; border-width: 1px; border-color: Theme.border;
+        ScrollView {
+            width: parent.width; height: parent.height;
+            content-width: self.visible-width; content-height: help-body.height;
+            help-body := SimilarityHelp { width: parent.width; }
+        }
+    }
+}

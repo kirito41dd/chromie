@@ -1,0 +1,12 @@
+[package]
+name = "migration"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Chromie 的 SeaORM 数据库迁移"
+repository = "https://github.com/kirito41dd/chromie"
+publish = false
+
+[dependencies]
+sea-orm-migration = { version = "2.0.4", default-features = false, features = ["cli", "sqlx-mysql", "runtime-tokio-rustls"] }
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt-multi-thread"] }

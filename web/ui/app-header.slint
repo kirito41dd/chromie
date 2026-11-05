@@ -1,0 +1,110 @@
+import { Theme } from "common.slint";
+
+component HeaderTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <bool> compact;
+    in property <bool> dense;
+    callback activated;
+    forward-focus: keyboard;
+    width: root.compact ? (root.dense ? 32px : 40px) : (root.label == "炼化／夺舍" ? 112px : root.label == "召回调试" || root.label == "采集消息" || root.label == "系统设置" ? 88px : 56px);
+    height: 36px; border-radius: 8px;
+    border-width: keyboard.has-focus ? 1px : 0px; border-color: Theme.accent;
+    background: root.selected ? #eeeaff : (touch.has-hover ? #f5f3fc : transparent);
+    accessible-role: button; accessible-label: root.label;
+    accessible-action-default => { root.activated(); }
+    Text {
+        text: root.label; color: root.selected ? #5747bd : Theme.secondary;
+        font-size: 13px; font-weight: root.selected ? 600 : 400;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    keyboard := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if !event.repeat && (event.text == Key.Return || event.text == " ") { root.activated(); accept } else { reject }
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { keyboard.focus(); root.activated(); } }
+}
+
+component ExitButton inherits Rectangle {
+    in property <bool> compact;
+    callback activated;
+    forward-focus: keyboard;
+    width: root.compact ? 44px : 76px; height: 44px;
+    border-radius: 8px;
+    border-width: keyboard.has-focus ? 1px : 0px; border-color: Theme.accent;
+    background: touch.has-hover ? #f5f3fc : transparent;
+    accessible-role: button; accessible-label: "退出空间";
+    accessible-action-default => { root.activated(); }
+    HorizontalLayout {
+        alignment: center; cross-axis-alignment: center; spacing: 6px;
+        Image { source: @image-url("log-out.svg"); width: 18px; height: 18px; image-fit: contain; }
+        if !root.compact: Text { text: "退出"; color: Theme.secondary; font-size: 12px; vertical-alignment: center; }
+    }
+    keyboard := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if !event.repeat && (event.text == Key.Return || event.text == " ") { root.activated(); accept } else { reject }
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { keyboard.focus(); root.activated(); } }
+}
+
+export component AppHeader inherits Rectangle {
+    min-width: 0px; max-width: 100000px; preferred-width: 0px;
+    horizontal-stretch: 1;
+    in property <bool> unlocked;
+    in property <bool> recall-page;
+    in property <bool> access-page;
+    in property <bool> messages-page;
+    in property <bool> settings-page;
+    in property <bool> transfer-page;
+    callback show-transfer;
+    in property <bool> can-manage;
+    in property <bool> dense;
+    in property <bool> compact;
+    in property <length> page-padding;
+    in property <bool> show-brand: true;
+    in property <bool> show-icon: true;
+    callback show-dashboard;
+    callback show-recall;
+    callback show-access;
+    callback show-messages;
+    callback show-settings;
+    callback lock;
+    callback focus-current;
+    focus-current => { if root.messages-page { messages-nav.focus(); } else if root.access-page { access-nav.focus(); } else if root.recall-page { recall-nav.focus(); } else { dashboard-nav.focus(); } }
+    out property <length> navigation-right: navigation.x + navigation.width;
+    out property <length> exit-left: exit.x;
+    height: 56px; background: Theme.paper;
+    HorizontalLayout {
+        padding-left: root.dense ? 8px : root.page-padding; padding-right: root.dense ? 8px : root.page-padding;
+        spacing: root.dense ? 4px : root.compact ? 6px : 20px; cross-axis-alignment: center;
+        HorizontalLayout {
+            horizontal-stretch: 0; spacing: 8px; cross-axis-alignment: center;
+            Rectangle {
+                visible: root.show-icon;
+                width: self.visible ? 26px : 0px; height: 28px; border-radius: 8px; background: #eeeaff;
+                Image { source: @image-url("hourglass.svg"); width: 12px; height: 16px; x: 7px; y: 6px; image-fit: contain; }
+            }
+            if root.show-brand: Text { text: "Chromie"; color: Theme.ink; font-size: 17px; font-weight: 700; vertical-alignment: center; }
+        }
+        navigation := Rectangle {
+            visible: root.unlocked;
+            width: root.unlocked ? tabs.preferred-width : 0px; height: 44px;
+            tabs := HorizontalLayout {
+                spacing: 4px; cross-axis-alignment: center;
+                dashboard-nav := HeaderTab { label: "看板"; compact: root.compact; dense: root.dense; selected: !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page; activated => { root.show-dashboard(); } }
+                access-nav := HeaderTab { label: "接入"; compact: root.compact; dense: root.dense; selected: root.access-page; activated => { root.show-access(); } }
+                messages-nav := HeaderTab { label: root.compact ? "消息" : "采集消息"; compact: root.compact; dense: root.dense; selected: root.messages-page; activated => { root.show-messages(); } }
+                recall-nav := HeaderTab { label: root.compact ? "召回" : "召回调试"; compact: root.compact; dense: root.dense; selected: root.recall-page; activated => { root.show-recall(); } }
+                HeaderTab { label: root.compact ? "迁移" : "炼化／夺舍"; compact: root.compact; dense: root.dense; selected: root.transfer-page; activated => { root.show-transfer(); } }
+                if root.can-manage: HeaderTab { label: root.compact ? "设置" : "系统设置"; compact: root.compact; dense: root.dense; selected: root.settings-page; activated => { root.show-settings(); } }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        exit := ExitButton { visible: root.unlocked; compact: root.compact; width: root.unlocked ? (root.dense ? 32px : root.compact ? 44px : 76px) : 0px; activated => { root.lock(); } }
+    }
+    Rectangle { y: parent.height - 1px; height: 1px; background: #eeedf5; }
+}

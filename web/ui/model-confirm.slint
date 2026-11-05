@@ -1,0 +1,51 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme, ActionButton } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export component ModelConfirm inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <string> action;
+    callback cancel;
+    callback confirm;
+    callback focus-cancel;
+    focus-cancel => { cancel-button.focus(); }
+    out property <length> panel-width: panel.width;
+    out property <length> panel-height: panel.height;
+    background: #25254266;
+    forward-focus: keyboard;
+    keyboard := FocusScope {
+        width: parent.width; height: parent.height;
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.cancel(); accept }
+            else if event.text == Key.Tab {
+                if cancel-button.focused { confirm-button.focus(); }
+                else { cancel-button.focus(); }
+                accept
+            } else { reject }
+        }
+        TouchArea { width: parent.width; height: parent.height; clicked => { root.cancel(); } }
+        panel := Rectangle {
+            width: min(480px, max(0px, root.width - 32px));
+            height: min(max(0px, root.height - 32px), form.preferred-height);
+            x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+            background: Theme.paper; border-radius: 16px; clip: true;
+            TouchArea { width: parent.width; height: parent.height; clicked => { } }
+            scroll := ScrollView {
+                width: parent.width; height: parent.height;
+                horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+                form := VerticalLayout {
+                    width: scroll.visible-width; padding: root.width < 360px ? 18px : 28px; spacing: 20px;
+                    SelectableText { text: root.title; text-color: Theme.ink; font-size: 20px; font-weight: 600; wrap: word-wrap; }
+                    SelectableText { text: root.description; text-color: Theme.secondary; font-size: 14px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Rectangle { horizontal-stretch: 1; }
+                        cancel-button := ActionButton { label: "取消"; subtle: true; width: 88px; activated => { root.cancel(); } }
+                        confirm-button := ActionButton { label: root.action; danger: true; width: 112px; activated => { root.confirm(); } }
+                    }
+                }
+            }
+        }
+    }
+}

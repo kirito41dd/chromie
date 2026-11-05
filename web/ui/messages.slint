@@ -1,0 +1,163 @@
+import { SelectableText, SelectableArea } from "selectable-text.slint";
+import { ComboBox } from "std-widgets.slint";
+import { Theme, ActionButton } from "common.slint";
+
+export struct ConversationRow { title:string, preview:string, meta:string }
+export struct CapturedRow { id:string, role:string, user:bool, body:string, time:string, metadata:string, truncated:bool }
+
+component SessionPane inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> busy;
+    in property <[ConversationRow]> sessions;
+    in property <int> selected;
+    in property <int> page;
+    in property <bool> more;
+    callback select(int);
+    callback turn(int);
+    min-width:0px; height: list.preferred-height;
+    list:=VerticalLayout { spacing:10px;
+        Text {text:"会话";color:Theme.ink;font-size:14px;font-weight:600;height:24px;}
+        if root.sessions.length == 0: Rectangle {height:120px;background:Theme.paper;border-radius:10px;
+            Text {text:root.busy?"正在读取会话…":"暂无采集消息";color:Theme.muted;font-size:13px;horizontal-alignment:center;vertical-alignment:center;}
+        }
+        for session[index] in root.sessions: Rectangle {
+            min-width:0px; height:row.preferred-height;background:root.selected==index?#f0edff:Theme.paper;
+            border-radius:10px;border-width:1px;border-color:root.selected==index?#c5bafa:Theme.border;
+            row:=VerticalLayout {padding:16px;spacing:7px;
+                Text {text:session.title;color:Theme.ink;font-size:13px;font-weight:600;overflow:elide;height:20px;}
+                Text {text:session.preview;color:Theme.secondary;font-size:12px;wrap:word-wrap;height:38px;overflow:elide;}
+                Text {text:session.meta;color:Theme.muted;font-size:11px;wrap:word-wrap;}
+            }
+            TouchArea {enabled:!root.busy;mouse-cursor:pointer;clicked=>{root.select(index);}}
+        }
+        HorizontalLayout {spacing:8px;alignment:start;
+            ActionButton {label:"上一页";min-width:70px;height:34px;subtle:true;disabled:root.busy||root.page==0;activated=>{root.turn(-1);}}
+            Text {text:""+(root.page+1);color:Theme.muted;font-size:12px;vertical-alignment:center;}
+            ActionButton {label:"下一页";min-width:70px;height:34px;subtle:true;disabled:root.busy||!root.more;activated=>{root.turn(1);}}
+        }
+    }
+}
+
+component ThreadPane inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> busy;
+    in property <bool> selected;
+    in property <string> title;
+    in property <[CapturedRow]> messages;
+    in property <int> page;
+    in property <bool> more;
+    in property <string> expanded;
+    in property <string> full-body;
+    in property <string> full-note;
+    private property <string> debug-id;
+    changed title=>{root.debug-id="";}
+    changed page=>{root.debug-id="";}
+    callback back;
+    callback turn(int);
+    callback expand(string);
+    min-width:0px;max-width:100000px;preferred-width:0px;horizontal-stretch:1;height:thread.preferred-height;
+    thread:=VerticalLayout {spacing:14px;
+        if !root.selected: Rectangle {height:240px;background:Theme.paper;border-radius:12px;border-width:1px;border-color:Theme.border;
+            VerticalLayout {padding:28px;spacing:10px;alignment:center;
+                Text {text:"选择一个会话";color:Theme.ink;font-size:18px;font-weight:600;horizontal-alignment:center;}
+                Text {text:"查看用户消息、助手回复和采集详情";color:Theme.muted;font-size:12px;wrap:word-wrap;horizontal-alignment:center;}
+            }
+        }
+        if root.selected: VerticalLayout {spacing:14px;
+            HorizontalLayout {spacing:12px;
+                if root.compact: ActionButton {label:"返回会话";width:90px;height:34px;subtle:true;activated=>{root.back();}}
+                SelectableText {text:root.title;text-color:Theme.ink;font-size:14px;font-weight:600;wrap:word-wrap;vertical-alignment:center;horizontal-stretch:1;min-width:0px;}
+            }
+            Text {text:"按消息时间排列 · 当前为第 "+(root.page+1)+" 页，最近一页为第 1 页";color:Theme.muted;font-size:11px;wrap:word-wrap;}
+            if root.messages.length==0: Rectangle {height:100px;background:Theme.paper;border-radius:10px;
+                Text {text:root.busy?"正在读取消息…":"此会话暂无可显示的消息";color:Theme.muted;font-size:12px;horizontal-alignment:center;vertical-alignment:center;}
+            }
+            for message in root.messages: Rectangle {
+                min-width:0px;height:card.preferred-height;background:Theme.paper;border-radius:12px;border-width:1px;border-color:Theme.border;
+                Rectangle {x:0px;y:20px;width:3px;height:20px;border-radius:2px;background:message.user?Theme.accent:#21a68c;}
+                card:=VerticalLayout {padding:root.compact?16px:20px;spacing:12px;
+                    HorizontalLayout {spacing:8px;
+                        Text {text:message.role;color:message.user?#6c50c6:#147e70;font-size:12px;font-weight:600;}
+                        Rectangle {horizontal-stretch:1;}
+                        SelectableText {text:message.time;text-color:Theme.muted;font-size:11px;}
+                    }
+                    if root.expanded!=message.id: SelectableText {text:message.body;text-color:Theme.ink;font-size:14px;wrap:word-wrap;}
+                    if root.expanded==message.id: SelectableArea {text:root.full-body;wrap:word-wrap;font-size:14px;height:320px;min-width:0px;}
+                    if root.expanded==message.id && root.full-note!="": SelectableText {text:root.full-note;text-color:Theme.muted;font-size:11px;wrap:word-wrap;}
+                    HorizontalLayout {spacing:8px;alignment:start;
+                        if message.truncated: ActionButton {label:root.expanded==message.id?"收起正文":"展开完整正文";min-width:110px;height:30px;subtle:true;disabled:root.busy;activated=>{root.expand(message.id);}}
+                        ActionButton {label:root.debug-id==message.id?"收起详情":"调试详情";min-width:82px;height:30px;subtle:true;activated=>{root.debug-id=root.debug-id==message.id?"":message.id;}}
+                    }
+                    if root.debug-id==message.id: SelectableArea {text:message.metadata;code:true;wrap:word-wrap;font-size:11px;height:160px;min-width:0px;}
+                }
+            }
+            HorizontalLayout {spacing:8px;alignment:start;
+                ActionButton {label:"更早消息";min-width:90px;height:36px;subtle:true;disabled:root.busy||!root.more;activated=>{root.turn(1);}}
+                ActionButton {label:"较新消息";min-width:90px;height:36px;subtle:true;disabled:root.busy||root.page==0;activated=>{root.turn(-1);}}
+            }
+        }
+    }
+}
+
+export component MessagesPage inherits Rectangle {
+    in property <bool> compact;
+    in property <bool> wide;
+    in property <bool> busy;
+    in property <string> error;
+    in property <[string]> agents;
+    in property <int> agent-index;
+    in property <[ConversationRow]> sessions;
+    in property <int> selected:-1;
+    in property <int> session-page;
+    in property <bool> sessions-more;
+    in property <string> thread-title;
+    in property <[CapturedRow]> messages;
+    in property <int> message-page;
+    in property <bool> messages-more;
+    in property <string> expanded;
+    in property <string> full-body;
+    in property <string> full-note;
+    callback refresh;
+    callback filter(int);
+    callback select(int);
+    callback turn-sessions(int);
+    callback turn-messages(int);
+    callback expand(string);
+    min-width:0px;height:page.preferred-height;
+    page:=VerticalLayout {spacing:18px;
+        Rectangle {height:root.compact?114px:70px;background:Theme.paper;border-radius:12px;border-width:1px;border-color:Theme.border;
+            VerticalLayout {padding:16px;spacing:10px;
+                if !root.compact: HorizontalLayout {spacing:12px;cross-axis-alignment:center;
+                    Text {text:"Agent";font-size:12px;color:Theme.secondary;}
+                    ComboBox {model:root.agents;current-index:root.agent-index;width:220px;enabled:!root.busy;selected(value)=>{root.filter(self.current-index);}}
+                    Rectangle {horizontal-stretch:1;}
+                    Text {text:root.busy?"正在读取…":"手动刷新查看新消息";color:Theme.muted;font-size:12px;}
+                    ActionButton {label:"刷新";min-width:70px;height:36px;subtle:true;activated=>{root.refresh();}}
+                }
+                if root.compact: VerticalLayout {spacing:10px;
+                    ComboBox {model:root.agents;current-index:root.agent-index;enabled:!root.busy;selected(value)=>{root.filter(self.current-index);}}
+                    HorizontalLayout {spacing:8px;
+                        Text {text:root.busy?"正在读取…":"手动刷新查看新消息";color:Theme.muted;font-size:11px;vertical-alignment:center;}
+                        Rectangle {horizontal-stretch:1;}
+                        ActionButton {label:"刷新";min-width:60px;height:30px;subtle:true;activated=>{root.refresh();}}
+                    }
+                }
+            }
+        }
+        if root.error!="": Rectangle {height:root.compact?80px:52px;border-radius:8px;background:#fcf0ed;
+            SelectableText {x:16px;width:parent.width - 32px;text:root.error;text-color:#a13b33;font-size:12px;wrap:word-wrap;vertical-alignment:center;height:parent.height;}
+        }
+        if root.wide: HorizontalLayout {spacing:22px;
+            VerticalLayout {width:300px;
+                SessionPane {compact:root.compact;busy:root.busy;sessions:root.sessions;selected:root.selected;page:root.session-page;more:root.sessions-more;select(index)=>{root.select(index);}turn(direction)=>{root.turn-sessions(direction);}}
+                Rectangle {vertical-stretch:1;}
+            }
+            VerticalLayout {horizontal-stretch:1;
+                ThreadPane {compact:false;busy:root.busy;selected:root.selected>=0;title:root.thread-title;messages:root.messages;page:root.message-page;more:root.messages-more;expanded:root.expanded;full-body:root.full-body;full-note:root.full-note;turn(direction)=>{root.turn-messages(direction);}expand(id)=>{root.expand(id);}}
+                Rectangle {vertical-stretch:1;}
+            }
+        }
+        if !root.wide && root.selected<0: SessionPane {compact:root.compact;busy:root.busy;sessions:root.sessions;selected:root.selected;page:root.session-page;more:root.sessions-more;select(index)=>{root.select(index);}turn(direction)=>{root.turn-sessions(direction);}}
+        if !root.wide && root.selected>=0: ThreadPane {compact:true;busy:root.busy;selected:true;title:root.thread-title;messages:root.messages;page:root.message-page;more:root.messages-more;expanded:root.expanded;full-body:root.full-body;full-note:root.full-note;back=>{root.select(-1);}turn(direction)=>{root.turn-messages(direction);}expand(id)=>{root.expand(id);}}
+    }
+}
