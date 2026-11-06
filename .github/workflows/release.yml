@@ -161,9 +161,25 @@ jobs:
             type=gha,scope=image-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
       - name: 独立 Compose 验证首次启动、鉴权、Secret 与重启保留
+        id: deployment_test
         run: |
+          mkdir -p .local/image-test-results
           docker compose pull mysql qdrant
-          python3 scripts/test-docker-deployment.py --image chromie:ci --client-container
+          mkdir -p .local/image-test-results
+          # Linux 上容器生成的配置保持 root 私有权限；验收进程以 root 读取虚构配置。
+          sudo python3 scripts/test-docker-deployment.py --image chromie:ci --client-container
+      - name: 只导出无凭据的验收统计
+        if: always() && steps.deployment_test.outcome != 'skipped'
+        run: |
+          mkdir -p .local/image-test-results
+          sudo python3 - <<'PY' > .local/image-test-results/results.json
+          import json
+          from pathlib import Path
+          paths = list(Path(".local/docker-tests").glob("*/results.json"))
+          if len(paths) != 1:
+              raise SystemExit("未找到唯一的独立验收统计，未导出配置或日志。")
+          print(json.dumps(json.loads(paths[0].read_text()), ensure_ascii=False, indent=2))
+          PY
       - name: 登录 Docker Hub
         if: needs.metadata.outputs.publish == 'true'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -214,7 +230,7 @@ jobs:
         if: always()
         with:
           name: image-test-${{ matrix.arch }}
-          path: .local/docker-tests/*/results.json
+          path: .local/image-test-results/results.json
           include-hidden-files: true
           retention-days: 7
           overwrite: true
