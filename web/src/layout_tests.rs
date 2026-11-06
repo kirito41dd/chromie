@@ -12,6 +12,9 @@ slint::slint! {
     import { RecallResult } from "../ui/recall-card.slint";
     import { SecretDialog, SecretContent } from "../ui/secret-dialog.slint";
     export component LayoutHarness inherits Window {
+        // 与实际 Web 窗口使用同一随包字体，避免主机缺字或替代字体改变换行测量。
+        default-font-family: "Noto Sans SC";
+        default-font-size: 14px;
         min-width: 0px; max-width: 100000px;
         min-height: 0px; max-height: 100000px;
         preferred-width: 1160px; preferred-height: 820px;
