@@ -87,6 +87,8 @@ class ReleaseTests(unittest.TestCase):
         output = self.root / "release"
         image = "docker.io/kirito41dd/chromie:" + release.version()
         release.package(output, release.clients(self.clients), image)
+        # GitHub 附件名须保持原样，校验表才能直接用于实际下载的文件。
+        self.assertTrue(all(p.name.isascii() for p in output.iterdir()))
         parsed = json.loads(subprocess.check_output([
             "docker", "compose", "-f", str(output / "compose.yaml"), "config", "--format", "json"
         ]))

@@ -78,7 +78,8 @@ def package(output, verified, image):
         raise ValueError("发行输出目录必须为空，不能覆盖已有资料")
     output.mkdir(parents=True, exist_ok=True)
     (output / "compose.yaml").write_text(compose)
-    (output / "使用说明.txt").write_text(
+    # GitHub 会重命名非 ASCII 附件名，破坏校验表中的文件引用。
+    (output / "DEPLOY.txt").write_text(
         f"Chromie {current}，镜像 {image}。\n"
         "在独立目录保存 compose.yaml，以下命令在 Bash 与 Nushell 中相同：\n\n"
         "docker compose pull\ndocker compose up -d\n"
