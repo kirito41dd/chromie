@@ -21,18 +21,24 @@ Chromie 是面向个人私有化部署的记忆服务，为不同对话、设备
 
 ### 1. 启动服务
 
-准备好 Docker Engine 和 Docker Compose，获取源码并进入包含 `compose.yaml` 的仓库目录。主机无需另装 Rust、Node、MySQL 或 Qdrant。
+准备好 Docker Engine、Docker Compose 和 `curl`。macOS 与 Linux 使用同一份 Compose，Docker 自动选择对应 CPU 架构的镜像。
+
+新建一个部署目录，下载 [v0.1.0 的 compose.yaml](https://github.com/kirito41dd/chromie/releases/download/v0.1.0/compose.yaml)，然后启动：
 
 以下命令在 Bash 与 Nushell 中相同：
 
 ```shell
-docker compose up -d --build
+mkdir chromie
+cd chromie
+curl -fL -o compose.yaml 'https://github.com/kirito41dd/chromie/releases/download/v0.1.0/compose.yaml'
+docker compose pull
+docker compose up -d --wait
 docker compose ps
 ```
 
-首次启动会在 Docker 内构建 Chromie、下载依赖并启动 MySQL 与 Qdrant，耗时较长。无需预先创建 `.env`、填写数据库密码或配置模型；服务会自动生成初始配置、执行数据库迁移并创建 `personal` 空间。
+Compose 从 [Docker Hub](https://hub.docker.com/r/kirito41dd/chromie) 拉取已构建的 Chromie 镜像，同时启动 MySQL 与 Qdrant。无需预先创建 `.env`、填写数据库密码或配置模型；首次启动会自动生成初始配置、执行数据库迁移并创建 `personal` 空间。
 
-`chromie` 服务就绪后即可登录；一次性的 `bootstrap` 容器成功退出是正常状态。当前 Compose 使用源码构建。项目已准备 GitHub Actions 向 `kirito41dd/chromie` 发布镜像的配置；首次发行成功后，可从 [GitHub Releases](https://github.com/kirito41dd/chromie/releases) 下载只拉取镜像的 Compose，使用步骤见 [持续集成与发布](docs/持续集成与发布.md)。
+`--wait` 会等待服务就绪，完成后即可登录；一次性的 `bootstrap` 容器成功退出是正常状态。发行 Compose 固定 Chromie 的版本；完整版本与客户端压缩包见 [GitHub Releases](https://github.com/kirito41dd/chromie/releases)。从源码构建见 [Docker 部署](docs/Docker部署.md#镜像构建与客户端平台)。
 
 ### 2. 查看初始密码并登录
 
@@ -53,7 +59,7 @@ docker compose exec chromie chromie-server initial-login
 
 之后可以在对话中明确告诉 Agent“记住这个项目约定”，在新对话里再让它查找相关背景。采集消息可在 Web 单独浏览，只有正式保存的记忆会参与召回。
 
-详细步骤见 [Codex 接入与使用](docs/Codex接入与使用.md) 和 [通用接入](docs/通用接入.md)。直接从源码构建的镜像默认只带当前架构的 Linux CLI；发行流水线会额外打包 macOS／Linux 的四平台客户端，见 [客户端平台说明](docs/Docker部署.md#镜像构建与客户端平台)。
+详细步骤见 [Codex 接入与使用](docs/Codex接入与使用.md) 和 [通用接入](docs/通用接入.md)。正式发行镜像携带 macOS／Linux 的 ARM64 与 x86_64 四份 CLI，安装器按用户设备选择并校验，服务端的部署平台不影响下载选择。
 
 ### 4. 按需启用语义检索
 
@@ -79,11 +85,11 @@ docker compose ps
 docker compose logs --tail 80 chromie
 ```
 
-升级前做好一致性备份，更新源码后执行。以下命令在 Bash 与 Nushell 中相同：
+升级前做好一致性备份，再从 [目标版本的 Release](https://github.com/kirito41dd/chromie/releases) 下载 `compose.yaml`，替换部署目录中的同名文件，保留原 `config/` 和 `data/`。以下命令在 Bash 与 Nushell 中相同：
 
 ```shell
-docker compose build --pull
-docker compose up -d
+docker compose pull
+docker compose up -d --wait
 ```
 
 升级会自动执行向前迁移。完整的停止、备份、恢复和镜像分发说明见 [Docker 部署](docs/Docker部署.md)。

@@ -4,14 +4,17 @@
 
 ## 启动
 
-从仓库根目录运行。以下外部命令在 Bash 与 Nushell 中相同：
+从 [GitHub Releases](https://github.com/kirito41dd/chromie/releases) 下载目标版本的 `compose.yaml`，保存在独立的部署目录中，再进入这个目录运行。发行 Compose 从 `docker.io/kirito41dd/chromie` 拉取固定版本镜像，支持 Linux AMD64／ARM64；macOS 的 Docker 容器同样运行 Linux 镜像。
+
+以下外部命令在 Bash 与 Nushell 中相同：
 
 ```shell
-docker compose up -d
+docker compose pull
+docker compose up -d --wait
 docker compose ps
 ```
 
-没有本地 Chromie 镜像时会在 Docker 内从源码构建，首次需要下载 Rust、系统包和编译依赖，耗时比后续启动长；主机不需要安装 Rust、Node 或 MySQL。基础镜像已固定 Rust 版本，Rust 依赖由 Cargo.lock 固定。
+首次拉取需要下载 Chromie、MySQL 和 Qdrant 镜像，随后服务自动完成初始化。公开镜像可匿名拉取；发布者使用的 Docker Hub Token 不需要配置到用户设备。仓库根目录的 `compose.yaml` 仍用于源码构建，与 Release 的纯镜像 Compose 分开，见下方[镜像构建与客户端平台](#镜像构建与客户端平台)。
 
 浏览器打开 [个人空间](http://127.0.0.1:8732/spaces/personal/dashboard)。在**自己的终端**查看初始空间与密码；不要将输出发给 Agent 或贴入聊天：
 
@@ -61,16 +64,16 @@ docker compose up -d
 
 `/health` 表示进程存活；`/ready` 同时检查数据库与索引连通。应用容器健康检查使用 `/ready`。`bootstrap` 容器成功退出是正常状态，首次准备完成后由其他服务长期运行。
 
-更新源码后重新构建并启动；保留原 config 和 data，升级会自动执行向前迁移：
+先做好下述一致性备份，再下载目标版本 Release 的 `compose.yaml` 替换部署文件；保留原 config 和 data，升级会自动执行向前迁移：
 
 以下命令在 Bash 与 Nushell 中相同：
 
 ```shell
-docker compose build --pull
-docker compose up -d
+docker compose pull
+docker compose up -d --wait
 ```
 
-源码版 Compose 的 Chromie 镜像优先使用本地构建，不尝试从公共仓库拉取未发布的本地标签。发布到镜像仓库之后，可将 Compose 中的 image 指向实际发布地址并去掉 build 与 pull_policy；镜像仓库和推送尚未由本项目指定。
+发行 Compose 固定到明确版本；仅运行 `pull` 不会将旧 Compose 自动切换到新版本。发布与校验材料说明见[持续集成与发布](持续集成与发布.md)。
 
 项目也提供不依赖源码目录的镜像分发包。开发者生成镜像压缩文件、独立 Compose 和校验值，以下命令在 Bash 与 Nushell 中相同：
 
@@ -113,7 +116,17 @@ with-env {CHROMIE_PORT: '18732'} { ^docker compose up -d }
 
 ## 镜像构建与客户端平台
 
-Dockerfile 在构建阶段生成 Linux 服务、Wasm 页面和当前 Linux 架构的 CLI。macOS 等额外 CLI 产物放入 packaging/clients/ 后会一同打包；它们只包含程序和 SHA-256，不包含本机配置。不能将同一个 Linux 程序标记为 macOS 产物。
+正式发行的每个服务镜像均携带 macOS／Linux 的 ARM64 与 x86_64 四份 CLI。安装脚本根据用户设备的系统与 CPU 选择下载文件，校验 SHA-256 并试运行后安装；缺少对应产物或程序不能运行时保留原有安装。
+
+修改源码或自行构建时，从仓库根目录运行。以下命令在 Bash 与 Nushell 中相同：
+
+```shell
+docker compose up -d --build
+```
+
+源码版 Compose 优先使用本地镜像，不拉取 `chromie:local`；更新源码后用 `docker compose build --pull` 重新构建，再 `docker compose up -d`。
+
+Dockerfile 在构建阶段生成 Linux 服务、Wasm 页面和当前 Linux 架构的 CLI。源码构建所需的 macOS 等额外 CLI 产物须预先放入 packaging/clients/，才会一同打包；它们只包含程序和 SHA-256，不包含本机配置。不能将同一个 Linux 程序标记为 macOS 产物。
 
 构建层使用 `rust:1.99.1-bookworm`，降低 Linux CLI 的 glibc 基线；运行层仍为 `debian:trixie-slim`。缓存按构建发行版和目标架构分开，避免复用较新系统的编译产物。发布客户端时还须在目标宿主实际执行验证，容器内可运行不代表宿主运行库兼容。
 
