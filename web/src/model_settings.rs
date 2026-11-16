@@ -97,6 +97,8 @@ impl Usage {
 }
 #[derive(Clone, Deserialize)]
 pub struct Generation {
+    #[serde(default)]
+    pub provider_id: Option<String>,
     #[serde(default = "default_concurrency")]
     pub max_concurrency: u32,
     #[serde(default)]
@@ -104,8 +106,6 @@ pub struct Generation {
     #[serde(default)]
     pub batch_size_override: Option<u32>,
     pub profile: Profile,
-    pub base_url: String,
-    pub has_api_key: bool,
     pub progress: Progress,
     pub scan_complete: bool,
 }
@@ -286,5 +286,60 @@ mod tests {
             1.0
         );
         assert_eq!(Progress::default().ratio(), 0.0);
+    }
+}
+
+/// Provider连接版本与进度可以变化；用途基线变化时禁止把旧草稿套到新配置上。
+pub(crate) fn same_edit_base(a: &Settings, b: &Settings) -> bool {
+    a.enabled == b.enabled
+        && match (a.target(), b.target()) {
+            (Some(a), Some(b)) => {
+                a.profile == b.profile
+                    && a.provider_id == b.provider_id
+                    && a.max_concurrency == b.max_concurrency
+                    && a.batch_size_override == b.batch_size_override
+                    && a.similarity_threshold_override == b.similarity_threshold_override
+            }
+            (None, None) => true,
+            _ => false,
+        }
+}
+pub(crate) fn text_edit_base(value: &serde_json::Value) -> (bool, Option<&str>, &str, u64, u64) {
+    (
+        value["enabled"] == true,
+        value["provider_id"].as_str(),
+        value["model"].as_str().unwrap_or_default(),
+        value["max_concurrency"].as_u64().unwrap_or(4),
+        value["max_output_tokens"].as_u64().unwrap_or(4096),
+    )
+}
+
+#[cfg(test)]
+mod draft_rebase_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn only_connection_versions_and_progress_can_rebase_a_model_draft() {
+        let a:Settings=serde_json::from_value(json!({"revision":1,"enabled":true,"active":{"provider_id":"provider-a","profile":{"model":"vector-a","model_version":"","dimensions":3},"progress":{},"scan_complete":true},"pending":null})).unwrap();
+        let mut b = a.clone();
+        b.revision = 5;
+        b.active.as_mut().unwrap().progress.ready = 10;
+        assert!(same_edit_base(&a, &b));
+        b.active.as_mut().unwrap().profile.model = "vector-b".into();
+        assert!(!same_edit_base(&a, &b));
+        let mut b = a.clone();
+        b.active.as_mut().unwrap().provider_id = Some("provider-b".into());
+        assert!(!same_edit_base(&a, &b));
+        let mut b = a.clone();
+        b.active.as_mut().unwrap().max_concurrency = 8;
+        assert!(!same_edit_base(&a, &b));
+        let a = json!({"revision":1,"enabled":true,"provider_id":"provider-a","model":"text-a","max_concurrency":4,"max_output_tokens":4096});
+        let mut b = a.clone();
+        b["revision"] = json!(8);
+        b["base_url"] = json!("https://fictional.example/v1");
+        b["has_api_key"] = json!(false);
+        assert_eq!(text_edit_base(&a), text_edit_base(&b));
+        b["max_output_tokens"] = json!(8192);
+        assert_ne!(text_edit_base(&a), text_edit_base(&b));
     }
 }

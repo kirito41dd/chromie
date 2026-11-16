@@ -1,6 +1,6 @@
 # MCP 接口设计
 
-当前使用官方 rmcp + Axum 提供八个工具：五个核心记忆工具，以及检索能力查询、召回反馈和分主题指南。MCP／hook 使用每 Agent 独立密钥，见 [Agent 接入设计](Agent接入设计.md)。正式记忆支持 BM25 和可选 embedding 混合召回，后台自动提取尚未实现。运行与验证方法见 [开发运行](开发运行.md)。
+当前使用官方 rmcp + Axum 提供十个工具：五个核心记忆工具，以及检索能力查询、召回反馈、分主题指南、主题导航和记忆引用查询。MCP／hook 使用每 Agent 独立密钥，见 [Agent 接入设计](Agent接入设计.md)。正式记忆支持 BM25 和可选 embedding 混合召回，可选后台文本模型提供主动发起的有限整理与提炼，见 [记忆引用与后台整理](记忆引用与后台整理.md)。运行与验证方法见 [开发运行](开发运行.md)。
 
 ## 参考与边界
 
@@ -28,17 +28,19 @@ MCP 不监听完整对话，也不自动把记忆注入每个回合。当前没�
 | --- | --- | --- |
 | `recall` | `query`；可选 `project_key`、`max_chars` | 返回最多 10 条已保存记忆及 `index_available`、`partial`、`truncated` |
 | `get_memory` | `memory_id` 或 `event_id` 二选一；可选 `view`、`cursor`、`max_chars` | 当前正文、修订历史或有限来源；分页时返回 `next_cursor` |
-| `remember` | `content`、`request_id`；可选 `scope`、`source_refs` | 事务提交后返回 `memory_id`、`revision`、`readable` 与 `processing_state` |
-| `correct_memory` | `memory_id`、`expected_revision`、`request_id`、`reason`；可选 `content`、`scope`、`source_refs` | 至少修改正文或范围一项，追加修订，返回新版本；旧版本修改发生 `revision_conflict` |
+| `remember` | `content`、`request_id`；可选 `scope`、`source_refs`、`memory_type`、`links` | 默认普通记忆，可指定 `topic` 作为主题；事务保存正文与关系后返回 ID、修订和索引状态 |
+| `correct_memory` | `memory_id`、`expected_revision`、`request_id`、`reason`；可选 `content`、`scope`、`source_refs`、`memory_type`、`links` | 可更新正文、范围、类型或关系，省略关系时保留原有关系，显式空数组清空；追加修订，旧版本修改发生 `revision_conflict` |
 | `forget_memory` | `memory_id` 或 `event_id` 二选一、`request_id`；记忆目标另需 `expected_revision` | 清理并隐藏内容，返回 `hidden`、`purge_state` 与 `affected_memories` |
 
-其余三个工具：
+其余五个工具：
 
 | 工具 | 用途 |
 | --- | --- |
 | `get_capabilities` | 首次检索前查询关键词／混合模式、语义状态与配置修订；不调用模型，不返回地址或密钥 |
 | `feedback_recall` | 按 recall_id 批量反馈实际评价过的条目与其中有用的条目；不能提交未返回的记忆或代其他 Agent 评价 |
 | `get_setup_guide` | 按 setup、capture、secret、diagnostics 主题读取指南与权限，可携带已知指南版本减少静态正文 |
+| `get_navigation` | 分页读取当前空间的主题入口，可按已知项目筛选，不调用模型 |
+| `get_memory_links` | 按记忆读取结构化引用或反向引用，返回简短入口及依据是否变化，按需继续读取 |
 
 ID 与 `request_id` 都是 UUID。`request_id` 是业务幂等键，不是 JSON-RPC ID；同一次写重试必须复用，参数改变却复用同一键会发生 `idempotency_conflict`。冲突后重新读取判断，不自动换成最新修订覆盖。更正可替换来源，也可保留上一修订来源；只改来源而不改正文 / 范围不是当前支持的操作。
 
@@ -97,3 +99,5 @@ ID 与 `request_id` 都是 UUID。`request_id` 是业务幂等键，不是 JSON-
 ## 安装指南
 
 `get_setup_guide` 接受 topic、known_guide_version 及可选公开用途，沿用当前 MCP 身份，返回空间、Agent ID、Secret 权限和指南版本；版本命中可省略静态正文。不返回接入密钥，不在服务端执行本机安装。日常记忆规则由初始化 instructions 和工具／参数描述提供，个人 AGENTS.md 片段为可选补充，不自动修改用户文件。接入见 [Codex 接入与使用](Codex接入与使用.md)。
+
+CLI 和 Codex 插件同时分发 `chromie-memory` Skill，按需展开引用组织、主题接续及 Secret 工作流；MCP 提供实时能力、修订与权限，二者使用同一套边界。

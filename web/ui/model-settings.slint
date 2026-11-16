@@ -1,4 +1,4 @@
-import { CheckBox, ScrollView } from "std-widgets.slint";
+import { ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme, InputField, ActionButton } from "common.slint";
 import { SelectableText } from "selectable-text.slint";
 import { SimilarityHelp, SimilarityInfo } from "similarity-help.slint";
@@ -12,14 +12,14 @@ export component ModelSettings inherits Rectangle {
     in property <bool> testing;
     in property <bool> loaded;
     in property <bool> enabled;
-    in property <bool> has-key;
+    in property <[string]> providers;
+    in-out property <int> provider-index;
     in property <string> error;
     in property <string> notice;
     in property <string> active-label;
     in property <string> pending-label;
     in property <string> progress;
     in property <float> ratio;
-    in-out property <string> url;
     in-out property <string> model;
     in-out property <string> version;
     in-out property <string> dimensions;
@@ -32,12 +32,11 @@ export component ModelSettings inherits Rectangle {
     private property <length> help-y;
     private property <length> help-anchor-height;
     private property <bool> has-recommendation: root.model == "text-embedding-v4" && root.version == "" && root.dimensions == "1024";
-    in-out property <string> key;
-    in-out property <bool> clear-key;
     in-out property <bool> advanced;
     callback edited;
     callback save;
     callback test;
+    callback reload;
     min-width: 0px;
     height: layout.preferred-height;
     background: transparent;
@@ -74,8 +73,9 @@ export component ModelSettings inherits Rectangle {
                     padding: root.compact ? 18px : 24px; spacing: 14px;
                     SelectableText { text: "向量模型"; text-color: Theme.ink; font-size: 18px; font-weight: 600; }
                     SelectableText { text: "配置对整个实例生效，各空间的数据仍独立。使用 OpenAI 兼容的 embeddings 接口。"; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
-                    SelectableText { text: "服务地址"; text-color: Theme.secondary; font-size: 12px; }
-                    InputField { value <=> root.url; hint: "https://服务地址/v1"; disabled: root.busy; edited => { root.edited(); } }
+                    SelectableText { text: "服务商"; text-color: Theme.secondary; font-size: 12px; }
+                    ComboBox { model: root.providers; current-index <=> root.provider-index; enabled: !root.busy; selected(_) => { root.edited(); } }
+                    if root.providers.length == 0: SelectableText { text: "请先在上方保存一个服务商。"; text-color: Theme.muted; font-size: 12px; }
                     HorizontalLayout {
                         spacing: 20px;
                         VerticalLayout {
@@ -98,8 +98,6 @@ export component ModelSettings inherits Rectangle {
                         }
                     }
                     SelectableText { text: "并发 1～64，同一模型的所有业务共享。仅调整并发不会重建索引。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
-                    SelectableText { text: "API Key" + (root.has-key ? " · 已保存，留空沿用" : " · 本地服务可留空"); text-color: Theme.secondary; font-size: 12px; }
-                    InputField { value <=> root.key; hint: root.has-key ? "已加密保存" : "输入 API Key"; masked: true; disabled: root.busy; edited => { root.edited(); } }
                     SelectableText { text: "启用后，各空间的记忆正文和搜索问题将发送到此服务。Secret 仅处理公开说明，原始对话不参与本次处理。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
                     HorizontalLayout {
                         ActionButton { label: root.advanced ? "收起高级设置" : "高级设置"; min-width: 120px; subtle: true; activated => { root.advanced = !root.advanced; } }
@@ -139,10 +137,13 @@ export component ModelSettings inherits Rectangle {
                         }
                         SelectableText { text: "留空使用自动值；0 关闭过滤。越高越严格，可能减少有效召回。"; font-size: 12px; text-color: Theme.muted; wrap: word-wrap; }
                         if root.similarity-help-open: SimilarityHelp { }
-                        if root.has-key: CheckBox { text: "移除已保存的 Key"; checked <=> root.clear-key; enabled: !root.busy; toggled => { root.edited(); } }
                         SelectableText { text: "仅修改地址或 Key 可沿用索引，请核对新服务的模型与编码方式相同。同名模型更换权重后可强制重建。"; text-color: Theme.muted; font-size: 12px; wrap: word-wrap; }
                     }
-                    if root.error != "": SelectableText { text: root.error; text-color: #a13d3d; font-size: 13px; wrap: word-wrap; }
+                    if root.error != "": VerticalLayout {
+                        spacing: 8px;
+                        SelectableText { text: root.error; text-color: #a13d3d; font-size: 13px; wrap: word-wrap; }
+                        HorizontalLayout { alignment: start; ActionButton { label: "重新载入配置"; subtle: true; disabled: root.busy; min-width: 128px; activated => { root.reload(); } } }
+                    }
                     if root.notice != "": SelectableText { text: root.notice; text-color: #087f69; font-size: 13px; wrap: word-wrap; }
                     if !root.compact: HorizontalLayout {
                         spacing: 10px;

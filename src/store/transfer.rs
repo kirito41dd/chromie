@@ -65,6 +65,7 @@ impl Store {
         }
         let mut records = Vec::new();
         let mut size = 0usize;
+        let live_ids: HashSet<_> = heads.iter().map(|head| head.id.clone()).collect();
         for head in heads {
             let id = uuid_from_bytes(&head.id)?;
             let revision = Self::revision(&tx, &head).await?;
@@ -82,6 +83,12 @@ impl Store {
                 return Err(Error::invalid("空间内容超过首版炼化上限"));
             }
             records.push(Record {
+                memory_type: crate::knowledge::MemoryType::parse(&revision.memory_type)?,
+                links: Self::links(&tx, space, id, head.current_revision)
+                    .await?
+                    .into_iter()
+                    .filter(|link| live_ids.contains(link.memory_id.as_bytes().as_slice()))
+                    .collect(),
                 memory_id: id,
                 source_revision: head.current_revision,
                 content,
@@ -92,7 +99,7 @@ impl Store {
         tx.commit().await?;
         Ok(Bundle {
             format: "chromie-soul".into(),
-            version: 1,
+            version: 2,
             package_id: Uuid::now_v7(),
             source_space: owner.slug,
             source_name: owner.name,
@@ -207,6 +214,7 @@ impl Store {
             .collect();
         let mut items = Vec::new();
         let mut states = Vec::new();
+        let mut destination_revisions = HashMap::new();
         for mut record in bundle.records {
             let dependencies = transfer::references(&record.content, &bundle.source_space);
             record.content = transfer::relocate(&record.content, &bundle.source_space, target);
@@ -221,6 +229,10 @@ impl Store {
                     .and_then(|h| h.forgotten_at)
                     .map(|t| t.to_string())
             ]));
+            destination_revisions.insert(
+                record.memory_id,
+                head.as_ref().map_or(1, |head| head.current_revision),
+            );
             let mut status = "new";
             let mut reason = "新记忆";
             if crate::types::bounded(
@@ -250,6 +262,7 @@ impl Store {
                     if same_secret
                         && revision.content.as_ref() == Some(&record.content)
                         && revision.project_key == record.project_key
+                        && revision.memory_type == record.memory_type.as_str()
                     {
                         status = "existing";
                         reason = "相同记忆已存在";
@@ -262,6 +275,53 @@ impl Store {
                 reason,
                 dependencies,
             });
+        }
+        let source_revisions: HashMap<_, _> = items
+            .iter()
+            .map(|item| (item.record.memory_id, item.record.source_revision))
+            .collect();
+        for item in &mut items {
+            for link in &mut item.record.links {
+                // 包只带当前正文，不能把缺失的历史依据伪装成目标实例的当前事实。
+                if !source_revisions.contains_key(&link.memory_id)
+                    || (link.relation == crate::knowledge::Relation::DerivedFrom
+                        && link.revision != source_revisions.get(&link.memory_id).copied())
+                {
+                    item.status = "conflict";
+                    item.reason = "引用目标缺失，或派生依据已过期，请重新核对后迁移";
+                } else if link.relation == crate::knowledge::Relation::DerivedFrom {
+                    link.revision = destination_revisions.get(&link.memory_id).copied();
+                }
+            }
+            item.record
+                .links
+                .sort_by_key(|link| (link.memory_id, link.relation.as_str()));
+            let mut previous_links = Vec::new();
+            if item.status == "existing" {
+                for link in Self::links(
+                    db,
+                    space,
+                    item.record.memory_id,
+                    destination_revisions[&item.record.memory_id],
+                )
+                .await?
+                {
+                    if Self::head(db, space, link.memory_id)
+                        .await?
+                        .forgotten_at
+                        .is_none()
+                    {
+                        previous_links.push(link);
+                    }
+                }
+            }
+            if item.status == "existing"
+                && serde_json::to_value(previous_links).map_err(|_| Error::unavailable())?
+                    != serde_json::to_value(&item.record.links).map_err(|_| Error::unavailable())?
+            {
+                item.status = "conflict";
+                item.reason = "目标空间的记忆引用关系不同";
+            }
         }
         // 任一 Secret 依赖冲突向引用它的记忆传播，避免引用目标空间的另一份凭据。
         loop {
@@ -282,6 +342,16 @@ impl Store {
                 {
                     item.status = "conflict";
                     item.reason = "引用的 Secret 缺失或存在冲突";
+                    changed = true;
+                }
+                if item
+                    .record
+                    .links
+                    .iter()
+                    .any(|link| unavailable.contains(&link.memory_id))
+                {
+                    item.status = "conflict";
+                    item.reason = "关联记忆存在冲突，保留目标空间现状";
                     changed = true;
                 }
             }
@@ -326,8 +396,15 @@ impl Store {
         space: SpaceId,
         id: Uuid,
         agent: Option<&[u8]>,
+        reason: Option<&str>,
     ) -> Result<Value> {
         let mut label = Self::source_label(db, space, agent).await?;
+        let generated =
+            agent.is_none() && reason.is_some_and(|reason| reason.starts_with("后台 LLM"));
+        if generated {
+            label["agent_name"] = json!("后台整理");
+            label["origin_kind"] = json!("llm");
+        }
         // 可选来源故障或旧库尚未升级时，保留读取能力并明确标记信息不可用。
         let imported = memory_imports::Entity::find_by_id((space.bytes(), id.as_bytes().to_vec()))
             .one(db)
@@ -336,7 +413,7 @@ impl Store {
             label["import_provenance_available"] = json!(false);
         }
         if let Ok(Some(row)) = imported {
-            if agent.is_none() {
+            if agent.is_none() && !generated {
                 label["agent_name"] = json!(format!("迁入 · {}", row.source_space));
             }
             label["imported_from"] = json!({"source_space":row.source_space,"source_name":row.source_name,"source_revision":row.source_revision,

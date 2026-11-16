@@ -70,6 +70,23 @@ async fn retry(
 }
 pub(crate) fn routes(prefix: &str) -> Router<Store> {
     Router::new()
+        .route(
+            &format!("{prefix}/system/providers"),
+            get(read_providers).post(save_provider),
+        )
+        .route(
+            &format!("{prefix}/system/organization"),
+            get(read_organization).post(save_organization),
+        )
+        .route(
+            &format!("{prefix}/system/text-model"),
+            get(read_text).post(save_text),
+        )
+        .route(&format!("{prefix}/system/text-model/test"), post(test_text))
+        .route(
+            &format!("{prefix}/system/text-model/disable"),
+            post(disable_text),
+        )
         .route(&format!("{prefix}/system/model"), get(read).post(save))
         .route(
             &format!("{prefix}/system/model/test"),
@@ -78,4 +95,90 @@ pub(crate) fn routes(prefix: &str) -> Router<Store> {
         .route(&format!("{prefix}/system/model/disable"), post(disable))
         .route(&format!("{prefix}/system/model/retry"), post(retry))
         .layer(DefaultBodyLimit::max(16 * 1024))
+}
+
+async fn read_text(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    Extension(_cookie): Extension<WebCredentialVersion>,
+) -> Result<Json<Value>> {
+    Ok(Json(store.text_model_settings(space).await?))
+}
+async fn save_text(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    Extension(_cookie): Extension<WebCredentialVersion>,
+    payload: std::result::Result<
+        Json<crate::text_model::Save>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<Value>> {
+    let Json(input) =
+        payload.map_err(|_| Error::invalid("文本模型配置格式无效，未返回提交内容"))?;
+    Ok(Json(store.save_text_model(space, input).await?))
+}
+async fn test_text(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    Extension(_cookie): Extension<WebCredentialVersion>,
+    payload: std::result::Result<
+        Json<crate::text_model::Save>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<Value>> {
+    let Json(input) =
+        payload.map_err(|_| Error::invalid("文本模型配置格式无效，未返回提交内容"))?;
+    Ok(Json(store.test_text_model(space, input).await?))
+}
+async fn disable_text(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    Extension(_cookie): Extension<WebCredentialVersion>,
+    Json(input): Json<Change>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        store
+            .disable_text_model(space, input.expected_revision)
+            .await?,
+    ))
+}
+
+async fn read_providers(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    Extension(_cookie): Extension<WebCredentialVersion>,
+) -> Result<Json<Value>> {
+    Ok(Json(store.model_providers(space).await?))
+}
+async fn save_provider(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    Extension(_cookie): Extension<WebCredentialVersion>,
+    payload: std::result::Result<
+        Json<crate::provider::Save>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<Value>> {
+    let Json(input) = payload.map_err(|_| Error::invalid("服务商配置格式无效，未返回提交内容"))?;
+    Ok(Json(store.save_provider(space, input).await?))
+}
+
+async fn read_organization(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    Extension(_cookie): Extension<WebCredentialVersion>,
+) -> Result<Json<Value>> {
+    Ok(Json(store.organization_settings(space).await?))
+}
+async fn save_organization(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    Extension(_cookie): Extension<WebCredentialVersion>,
+    payload: std::result::Result<
+        Json<crate::organization::Save>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<Value>> {
+    let Json(input) = payload.map_err(|_| Error::invalid("自动整理配置格式无效"))?;
+    Ok(Json(store.save_organization(space, input).await?))
 }

@@ -1,0 +1,156 @@
+use sea_orm_migration::prelude::*;
+
+pub struct Migration;
+
+impl MigrationName for Migration {
+    fn name(&self) -> &str {
+        "m20261111_135824_knowledge_jobs"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(Alias::new("text_model_settings"))
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Alias::new("id"))
+                            .tiny_unsigned()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("revision"))
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("credential_id"))
+                            .binary_len(16)
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(Alias::new("enabled")).boolean().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("base_url"))
+                            .string_len(2048)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("model_name"))
+                            .string_len(256)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("key_cipher"))
+                            .custom(Alias::new("BLOB"))
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("key_nonce"))
+                            .binary_len(12)
+                            .null(),
+                    )
+                    .col(ColumnDef::new(Alias::new("key_id")).string_len(128).null())
+                    .col(
+                        ColumnDef::new(Alias::new("updated_at"))
+                            .custom(Alias::new("DATETIME(6)"))
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_table(
+                Table::create()
+                    .table(Alias::new("knowledge_jobs"))
+                    .if_not_exists()
+                    .character_set("utf8mb4")
+                    .collate("utf8mb4_bin")
+                    .col(
+                        ColumnDef::new(Alias::new("space_id"))
+                            .binary_len(16)
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(Alias::new("id")).binary_len(16).not_null())
+                    .col(ColumnDef::new(Alias::new("kind")).string_len(16).not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("config_revision"))
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("state"))
+                            .string_len(16)
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(Alias::new("payload")).json().null())
+                    .col(ColumnDef::new(Alias::new("result")).json().null())
+                    .col(
+                        ColumnDef::new(Alias::new("lease_owner"))
+                            .binary_len(16)
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("lease_expires_at"))
+                            .custom(Alias::new("DATETIME(6)"))
+                            .null(),
+                    )
+                    .col(ColumnDef::new(Alias::new("attempts")).unsigned().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("run_after"))
+                            .custom(Alias::new("DATETIME(6)"))
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("created_at"))
+                            .custom(Alias::new("DATETIME(6)"))
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("updated_at"))
+                            .custom(Alias::new("DATETIME(6)"))
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("last_error"))
+                            .string_len(64)
+                            .null(),
+                    )
+                    .primary_key(
+                        Index::create()
+                            .col(Alias::new("space_id"))
+                            .col(Alias::new("id")),
+                    )
+                    .index(
+                        Index::create()
+                            .name("ix_knowledge_jobs_due")
+                            .col(Alias::new("state"))
+                            .col(Alias::new("run_after")),
+                    )
+                    .index(
+                        Index::create()
+                            .name("ix_knowledge_jobs_space_time")
+                            .col(Alias::new("space_id"))
+                            .col(Alias::new("created_at")),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_knowledge_job_space")
+                            .from(Alias::new("knowledge_jobs"), Alias::new("space_id"))
+                            .to(Alias::new("spaces"), Alias::new("id")),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn down(&self, _: &SchemaManager) -> Result<(), DbErr> {
+        Err(DbErr::Custom(
+            "文本模型配置和整理任务不能自动删除，请使用显式归档迁移".into(),
+        ))
+    }
+}

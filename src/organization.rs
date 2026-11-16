@@ -1,0 +1,14 @@
+//! 自动整理按当前记忆修订推进；预算限制处理尝试，不是供应商计费额度。
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Save {
+    pub expected_revision: i64,
+    pub enabled: bool,
+    #[serde(default)]
+    pub extraction_enabled: bool,
+    pub batch_size: u32,
+    pub interval_seconds: u32,
+    pub daily_limit: u32,
+}

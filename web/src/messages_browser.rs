@@ -6,7 +6,7 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
 
@@ -38,6 +38,7 @@ struct State {
     message_page: u64,
     message_snapshot: Option<String>,
     messages: Vec<Message>,
+    title_revision: i64,
 }
 struct Controller {
     ui: slint::Weak<Dashboard>,
@@ -60,6 +61,13 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
             session,
             state: Rc::new(RefCell::new(State::default())),
         })
+    });
+    ui.on_messages_save_title(|fixed|{
+        let Some((ui,_,state))=active()else{return};
+        let s=state.borrow();
+        let Some(selected)=&s.selected else{return};
+        let payload=json!({"agent_id":selected.agent_id,"session_id":selected.session_id,"expected_revision":s.title_revision,"title":if fixed{Some(ui.get_messages_title_draft().to_string())}else{None}});
+        drop(s);launch("title",payload);
     });
     ui.on_messages_refresh(|| {
         if active().is_some_and(|(_, _, state)| state.borrow().selected.is_some()) {
@@ -97,14 +105,8 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
         state.borrow_mut().message_page = 0;
         state.borrow_mut().message_snapshot = None;
         if let Some(selected) = selected {
-            ui.set_messages_thread_title(
-                format!(
-                    "{} · {}",
-                    selected.origin.agent_name,
-                    selected.session_id.chars().take(12).collect::<String>()
-                )
-                .into(),
-            );
+            ui.set_messages_thread_title(selected.title.clone().into());
+            ui.set_messages_title_draft(selected.title.into());
             conversation(true);
         } else {
             state.borrow_mut().gate.clear();
@@ -159,6 +161,9 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
     });
 }
 fn clear_thread(ui: &Dashboard) {
+    ui.set_messages_thread_info("".into());
+    ui.set_messages_title_history("".into());
+    ui.set_messages_title_locked(false);
     ui.set_messages_rows(ModelRc::new(VecModel::<CapturedRow>::default()));
     ui.set_messages_expanded("".into());
     ui.set_messages_full_body("".into());
@@ -189,6 +194,20 @@ pub(crate) fn clear() {
 }
 pub(crate) fn load() {
     launch("agents", json!({}));
+}
+
+pub(crate) fn current_event_ids() -> Vec<String> {
+    active()
+        .map(|(_, _, state)| {
+            state
+                .borrow()
+                .messages
+                .iter()
+                .take(10)
+                .map(|message| message.event_id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 fn launch(operation: &str, payload: Value) {
     let Some((ui, session, state)) = active() else {
@@ -273,7 +292,7 @@ fn populate(operation: &str, body: &str, ui: &Dashboard, state: &RefCell<State>)
                 .items
                 .iter()
                 .map(|c| ConversationRow {
-                    title: format!("{} · {} 条", c.origin.agent_name, c.message_count).into(),
+                    title: c.title.clone().into(),
                     preview: c
                         .preview
                         .split_whitespace()
@@ -281,16 +300,11 @@ fn populate(operation: &str, body: &str, ui: &Dashboard, state: &RefCell<State>)
                         .join(" ")
                         .into(),
                     meta: format!(
-                        "{} · 会话 …{}",
-                        crate::browser::date(&c.received_at),
-                        c.session_id
-                            .chars()
-                            .rev()
-                            .take(8)
-                            .collect::<String>()
-                            .chars()
-                            .rev()
-                            .collect::<String>()
+                        "{} · {} 条 · 已提炼 {} 条 · {}",
+                        c.origin.agent_name,
+                        c.message_count,
+                        c.extraction["completed"].as_u64().unwrap_or(0),
+                        crate::browser::date(&c.received_at)
                     )
                     .into(),
                 })
@@ -316,6 +330,15 @@ fn populate(operation: &str, body: &str, ui: &Dashboard, state: &RefCell<State>)
             let mut s = state.borrow_mut();
             s.message_snapshot = Some(data.as_of);
             s.messages = data.items;
+            drop(s);
+            if let Some(info) = data.conversation_info {
+                apply_title(&info, ui, state);
+            }
+            Some(false)
+        }
+        "title" => {
+            let info: Value = serde_json::from_str(body).ok()?;
+            apply_title(&info, ui, state);
             Some(false)
         }
         "detail" => {
@@ -342,6 +365,70 @@ fn populate(operation: &str, body: &str, ui: &Dashboard, state: &RefCell<State>)
         }
         _ => None,
     }
+}
+fn apply_title(info: &Value, ui: &Dashboard, state: &RefCell<State>) {
+    let mut s = state.borrow_mut();
+    s.title_revision = info["revision"].as_i64().unwrap_or(0);
+    if let Some(title) = info["title"].as_str() {
+        ui.set_messages_thread_title(title.into());
+        ui.set_messages_title_draft(title.into());
+        if let Some(selected) = s.selected.as_mut() {
+            selected.title = title.into();
+        }
+        if let Ok(index) = usize::try_from(ui.get_messages_selected()) {
+            let rows = ui.get_messages_sessions();
+            if let Some(mut row) = rows.row_data(index) {
+                row.title = title.into();
+                rows.set_row_data(index, row);
+            }
+            if let Some(selected) = s.sessions.get_mut(index) {
+                selected.title = title.into();
+            }
+        }
+    }
+    ui.set_messages_title_locked(info["locked"] == true);
+    let key = s
+        .selected
+        .as_ref()
+        .map(|c| format!("{} · 会话 {}", c.origin.agent_name, c.session_id))
+        .unwrap_or_default();
+    ui.set_messages_thread_info(
+        format!(
+            "{}\n已提炼 {} / {} 条 · {}",
+            key,
+            info["extraction"]["completed"].as_u64().unwrap_or(0),
+            info["extraction"]["total"].as_u64().unwrap_or(0),
+            if info["locked"] == true {
+                "标题已固定"
+            } else {
+                "自动命名"
+            }
+        )
+        .into(),
+    );
+    ui.set_messages_title_history(
+        info["history"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        format!(
+                            "{} · {} · {}",
+                            crate::browser::date(r["at"].as_str().unwrap_or_default()),
+                            if r["source"] == "model" {
+                                "自动"
+                            } else {
+                                "手动"
+                            },
+                            r["title"].as_str().unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+            .into(),
+    );
 }
 #[wasm_bindgen]
 pub fn receive_messages(generation: u32, status: u16, body: String) {

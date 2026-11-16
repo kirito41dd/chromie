@@ -1,4 +1,4 @@
-import init, { receive_transfer, receive_transfer_file, set_transfer_page, receive_model, set_settings_page, selected_text, receive_messages, set_messages_page, receive_access, receive_access_notice, hide_access_keys, resume_access, set_access_page, start, set_page, receive_snapshot, receive_recall, receive_secret, receive_secret_copy, receive_secret_verification, hide_secret, end_session, resize_viewport, restore_session } from "/web/chromie_web.js";
+import init, { receive_provider, receive_text_model, receive_knowledge, receive_transfer, receive_transfer_file, set_transfer_page, receive_model, set_settings_page, selected_text, receive_messages, set_messages_page, receive_access, receive_access_notice, hide_access_keys, resume_access, set_access_page, start, set_page, receive_snapshot, receive_recall, receive_secret, receive_secret_copy, receive_secret_verification, hide_secret, end_session, resize_viewport, restore_session } from "/web/chromie_web.js";
 
 let activeRequest;
 let activeRecall;
@@ -117,6 +117,8 @@ window.chromieNavigate = (space, recall, replace, access = false, messages = fal
     if (ready) { hide_secret(); hide_access_keys(); }
     window.chromieCancelSecret();
     window.chromieCancelMessages();
+  window.chromieCancelKnowledge?.();
+  window.chromieCancelTextModel?.();
     if (replace) window.history.replaceState(null, "", path);
     else window.history.pushState(null, "", path);
   }
@@ -149,6 +151,8 @@ window.chromieCancel = () => {
   window.chromieCancelRecall();
   window.chromieCancelAccess();
   window.chromieCancelMessages?.();
+  window.chromieCancelKnowledge?.();
+  window.chromieCancelTextModel?.();
   window.chromieCancelModel?.();
   window.chromieCancelTransfer?.();
   window.chromieCancelSecret();
@@ -286,6 +290,50 @@ window.chromieRecall = async (space, query, generation) => {
   }
 };
 // 原始采集浏览使用独立、有界读取；正文与筛选不写入 URL 或存储。
+window.chromieRequestId = () => {
+  if (!window.crypto?.getRandomValues) return "";
+  const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+};
+const activeTextModel = new Map();
+window.chromieCancelTextModel = () => { for (const controller of activeTextModel.values()) controller.abort(); activeTextModel.clear(); };
+window.chromieTextModel = async (space, operation, payload, generation) => {
+  if (typeof space !== "string" || !/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["read", "reload", "save", "test", "disable", "jobs", "queue", "review", "apply-revision"].includes(operation)) { receive_text_model(operation, generation, 400, ""); return; }
+  const channel = ["jobs", "queue"].includes(operation) ? "jobs" : ["review", "apply-revision"].includes(operation) ? "review" : "config";
+  activeTextModel.get(channel)?.abort(); const controller = new AbortController(); activeTextModel.set(channel, controller);
+  const timeout = setTimeout(() => controller.abort(), 150000);
+  try {
+    const prefix = `/spaces/${encodeURIComponent(space)}`;
+    const path = channel === "review" ? `${prefix}/knowledge/${operation}` : channel === "jobs" ? `${prefix}/knowledge/jobs` : `${prefix}/system/text-model${["test", "disable"].includes(operation) ? "/" + operation : ""}`;
+    const read = ["read", "reload", "jobs"].includes(operation);
+    const response = await fetch(path, {method:read ? "GET" : "POST", credentials:"same-origin", mode:"same-origin", redirect:"error", cache:"no-store", signal:controller.signal, ...(read ? {} : {headers:{"Content-Type":"application/json"}, body:payload})});
+    payload = "";
+    const body = await response.text();
+    // 覆盖 20 项任务中完整冲突说明的最坏 JSON 转义，仍限制异常大响应。
+    const oversized = body.length > 4 * 1024 * 1024;
+    if (activeTextModel.get(channel) === controller) receive_text_model(operation, generation, oversized ? 502 : response.status, oversized ? "" : body);
+  } catch { if (activeTextModel.get(channel) === controller) receive_text_model(operation, generation, 0, ""); }
+  finally { payload = ""; clearTimeout(timeout); if (activeTextModel.get(channel) === controller) activeTextModel.delete(channel); }
+};
+
+const activeKnowledge = new Map();
+window.chromieCancelKnowledge = () => { for (const controller of activeKnowledge.values()) controller.abort(); activeKnowledge.clear(); };
+window.chromieKnowledge = async (space, operation, payload, generation) => {
+  const channel = operation === "navigation" ? "navigation" : "reader";
+  activeKnowledge.get(channel)?.abort();
+  if (typeof space !== "string" || space.length > 32 || !/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["navigation", "memory", "outgoing", "incoming"].includes(operation)) { receive_knowledge(operation, generation, 400, ""); return; }
+  const route = operation === "outgoing" || operation === "incoming" ? "links" : operation;
+  const controller = new AbortController(); activeKnowledge.set(channel, controller);
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`/spaces/${encodeURIComponent(space)}/knowledge/${route}`, {method:"POST", credentials:"same-origin", cache:"no-store", headers:{"Content-Type":"application/json"}, body:payload, signal:controller.signal});
+    const body = await response.text();
+    if (activeKnowledge.get(channel) === controller) receive_knowledge(operation, generation, body.length > 50000 ? 502 : response.status, body.length > 50000 ? "" : body);
+  } catch { if (activeKnowledge.get(channel) === controller) receive_knowledge(operation, generation, 0, ""); }
+  finally { clearTimeout(timeout); if (activeKnowledge.get(channel) === controller) activeKnowledge.delete(channel); }
+};
+
 let activeMessages;
 window.chromieCancelMessages = () => { activeMessages?.abort(); activeMessages = undefined; };
 window.chromieMessages = async (space, operation, payload, generation) => {
@@ -297,6 +345,7 @@ window.chromieMessages = async (space, operation, payload, generation) => {
   if (operation === "agents") { path = "agents"; method = "GET"; }
   else if (operation === "sessions") path = "messages/sessions";
   else if (operation === "conversation") path = "messages/conversation";
+  else if (operation === "title") path = "messages/title";
   else if (operation === "detail" && typeof data.event_id === "string" && /^[0-9a-f-]{36}$/i.test(data.event_id)) { path = `messages/events/${data.event_id}`; method = "GET"; }
   else { receive_messages(generation, 400, ""); return; }
   const controller = new AbortController(); activeMessages = controller;
@@ -422,7 +471,7 @@ window.chromieCancelModel = () => {
   pending?.abort();
 };
 window.chromieModelRequest = async (space, operation, payload, generation) => {
-  if (!["read", "test", "save", "disable", "retry"].includes(operation) || !/^[a-z]+(?:-[a-z]+)*$/.test(space)) {
+  if (!["read", "reload", "test", "save", "disable", "retry"].includes(operation) || !/^[a-z]+(?:-[a-z]+)*$/.test(space)) {
     receive_model(generation, 400, ""); return;
   }
   const controller = new AbortController();
@@ -432,8 +481,8 @@ window.chromieModelRequest = async (space, operation, payload, generation) => {
   try {
     const suffix = ["test", "disable", "retry"].includes(operation) ? `/${operation}` : "";
     const response = await fetch(`/spaces/${encodeURIComponent(space)}/system/model${suffix}`, {
-      method: operation === "read" ? "GET" : "POST", credentials: "same-origin", mode: "same-origin", redirect: "error", cache: "no-store", signal: controller.signal,
-      ...(operation === "read" ? {} : {headers: {"Content-Type": "application/json"}, body: payload}),
+      method: ["read","reload"].includes(operation) ? "GET" : "POST", credentials: "same-origin", mode: "same-origin", redirect: "error", cache: "no-store", signal: controller.signal,
+      ...(["read","reload"].includes(operation) ? {} : {headers: {"Content-Type": "application/json"}, body: payload}),
     });
     payload = "";
     const body = await response.text();
@@ -585,6 +634,8 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => {
   window.chromieCancelMessages();
+  window.chromieCancelKnowledge?.();
+  window.chromieCancelTextModel?.();
   clearTimeout(resizeTimer);
   resizeTimer = undefined;
   if (ready) end_session();
@@ -614,9 +665,28 @@ window.addEventListener("popstate", () => {
   hide_secret();
   window.chromieCancelSecret();
   window.chromieCancelMessages();
+  window.chromieCancelKnowledge?.();
+  window.chromieCancelTextModel?.();
   pageTitle(route.recall, route.access, route.messages, route.settings, route.transfer);
   if (route.transfer) set_transfer_page(true); else if (route.settings) set_settings_page(true); else if (route.messages) set_messages_page(true); else if (route.access) set_access_page(true); else set_page(route.recall);
 });
+// Provider 与整理设置只走管理 Cookie；切页取消请求，Key 提交后丢弃局部载荷。
+const activeProviders = new Map();
+window.chromieCancelProvider = () => {for (const pending of activeProviders.values()) pending.abort();activeProviders.clear();};
+window.chromieProviderRequest = async (space, operation, payload, generation) => {
+  if (!/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["read","save","organization-read","organization-save"].includes(operation)) {receive_provider(operation,generation,400,"");return;}
+  const organization=operation.startsWith("organization");const channel=organization?"organization":"providers";
+  activeProviders.get(channel)?.abort();const controller=new AbortController();activeProviders.set(channel,controller);
+  const timeout=setTimeout(()=>controller.abort(),20000);
+  try {
+    const read=operation.endsWith("read");
+    const response=await fetch(`/spaces/${encodeURIComponent(space)}/system/${channel}`,{method:read?"GET":"POST",credentials:"same-origin",mode:"same-origin",redirect:"error",cache:"no-store",signal:controller.signal,...(read?{}:{headers:{"Content-Type":"application/json"},body:payload})});
+    payload="";const body=await response.text();
+    if(activeProviders.get(channel)===controller) receive_provider(operation,generation,body.length>128*1024?502:response.status,body.length>128*1024?"":body);
+  } catch {if(activeProviders.get(channel)===controller) receive_provider(operation,generation,0,"");}
+  finally {payload="";clearTimeout(timeout);if(activeProviders.get(channel)===controller) activeProviders.delete(channel);}
+};
+
 try {
   fitViewport();
   await init();

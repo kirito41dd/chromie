@@ -6,8 +6,8 @@
 
 - 创建接入只填名称；稳定 Agent ID 与两枚独立密钥保持不变。现有客户端类型列保留兼容历史，新建记录使用 `other`，不再作为创建参数或教程分支。
 - 安装方式只保留 Codex 与通用接入，不提供 Claude／ZeroClaw 专属配置。
-- Codex 插件包含 setup skill、两个采集 hook、采集程序与 Secret 本地帮助程序。插件无个人凭据；setup 从私有接入文件读取凭据，为本机绑定 HTTP MCP 和采集配置。
-- 日常记忆使用规则统一通过 MCP instructions、工具与参数描述提供，不另做记忆 skill。安装诊断由只读 `get_setup_guide` 提供，不通过 MCP 返回接入密钥。
+- Codex 插件包含 setup、chromie-memory 两个 Skill、两个采集 hook、采集程序与 Secret 本地帮助程序。插件无个人凭据；setup 从私有接入文件读取凭据，为本机绑定 HTTP MCP 和采集配置。
+- 日常记忆的实时能力与关键边界由 MCP 提供，chromie-memory Skill 按需补充组织与接续工作流，见 [记忆引用与后台整理](记忆引用与后台整理.md)。安装诊断由只读 `get_setup_guide` 提供，不通过 MCP 返回接入密钥。
 - Codex hook 的安装、信任与实际触发分别验收，不修改信任记录、不绕过客户端审核。重复安装同一连接不增加第二套 hook。
 - 通用接入提供 MCP 配置、独立采集程序和 hook 调用命令；用户只在客户端注册 hook，必要时转换 stdin，上传、凭据与补传由 bin 负责。
 

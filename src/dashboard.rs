@@ -46,6 +46,7 @@ pub struct RecentMemory {
     pub secret_stored: Option<bool>,
     pub memory_id: String,
     pub revision: i32,
+    pub memory_type: String,
     pub preview: String,
     /// 仅为普通正文或 Secret 公开说明；展开卡片时显示，不读取 Secret 载荷。
     pub content: String,
@@ -142,7 +143,14 @@ impl Store {
             let content = revision.content.ok_or_else(Error::missing)?;
             recent.push(RecentMemory {
                 usage: usage.as_mut().and_then(|usage| usage.remove(&id)),
-                origin: Self::memory_origin(&tx, space, id, revision.agent_id.as_deref()).await?,
+                origin: Self::memory_origin(
+                    &tx,
+                    space,
+                    id,
+                    revision.agent_id.as_deref(),
+                    revision.change_reason.as_deref(),
+                )
+                .await?,
                 kind: if secret_stored.is_some() {
                     "secret_ref"
                 } else {
@@ -151,6 +159,7 @@ impl Store {
                 secret_stored,
                 memory_id: id.to_string(),
                 revision: head.current_revision,
+                memory_type: revision.memory_type,
                 preview: content.chars().take(360).collect(),
                 content,
                 project_key: revision.project_key,

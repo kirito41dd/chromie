@@ -89,6 +89,8 @@ async fn put(store: &Store, space: SpaceId, text: &str) -> Uuid {
         .remember(
             space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: text.into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
@@ -359,6 +361,8 @@ async fn batches_preserve_mapping_usage_isolation_runtime_settings_and_stale_bar
         .correct(
             owner,
             Correct {
+                memory_type: Default::default(),
+                links: None,
                 memory_id: changed,
                 expected_revision: 1,
                 request_id: Uuid::now_v7(),

@@ -7,6 +7,24 @@ use sea_orm::{IntoActiveModel, QueryOrder};
 use std::collections::HashSet;
 
 impl Store {
+    pub(super) async fn mark_generated<C: ConnectionTrait>(
+        db: &C,
+        space: SpaceId,
+        id: Uuid,
+        job: Uuid,
+    ) -> Result<()> {
+        memory_revisions::Entity::update_many()
+            .col_expr(
+                memory_revisions::Column::ChangeReason,
+                sea_orm::sea_query::Expr::value(format!("后台 LLM 整理：任务 {job}")),
+            )
+            .filter(memory_revisions::Column::SpaceId.eq(space.bytes()))
+            .filter(memory_revisions::Column::MemoryId.eq(id.as_bytes().to_vec()))
+            .filter(memory_revisions::Column::Revision.eq(1))
+            .exec(db)
+            .await?;
+        Ok(())
+    }
     pub async fn capture(&self, space: SpaceId, event: Event) -> Result<Value> {
         bounded(&event.client_type, 32)?;
         bounded(&event.session_id, 128)?;
@@ -115,18 +133,30 @@ impl Store {
     }
 
     pub async fn remember(&self, space: SpaceId, input: Remember) -> Result<Value> {
+        let tx = self.begin(space).await?;
+        let result = self.remember_tx(&tx, space, input).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    pub(super) async fn remember_tx(
+        &self,
+        tx: &DatabaseTransaction,
+        space: SpaceId,
+        input: Remember,
+    ) -> Result<Value> {
         bounded(&input.content, 16000)?;
         let project = input.scope.project()?;
         let hash = Self::hash(&input)?;
-        let tx = self.begin(space).await?;
         if let Some(result) = self
-            .replay(&tx, space, "remember", input.request_id, &hash)
+            .replay(tx, space, "remember", input.request_id, &hash)
             .await?
         {
             return Ok(result);
         }
-        Self::check_sources(&tx, space, &input.source_refs).await?;
+        Self::check_sources(tx, space, &input.source_refs).await?;
         let id = Uuid::now_v7();
+        Self::check_links(tx, space, id, &input.links, false).await?;
         let current = now();
         memories::ActiveModel {
             space_id: Set(space.bytes()),
@@ -137,7 +167,7 @@ impl Store {
             forgotten_at: Set(None),
             agent_id: Set(self.actor_bytes()),
         }
-        .insert(&tx)
+        .insert(tx)
         .await?;
         memory_revisions::ActiveModel {
             space_id: Set(space.bytes()),
@@ -148,43 +178,52 @@ impl Store {
             change_reason: Set(None),
             created_at: Set(current),
             agent_id: Set(self.actor_bytes()),
+            memory_type: Set(input.memory_type.as_str().into()),
         }
-        .insert(&tx)
+        .insert(tx)
         .await?;
-        Self::add_sources(&tx, space, id, 1, &input.source_refs).await?;
-        Self::schedule(&tx, space, id, 1).await?;
-        self.receipt(
-            &tx,
-            space,
-            "remember",
-            input.request_id,
-            hash,
-            (id, Some(1)),
-        )
-        .await?;
-        tx.commit().await?;
+        Self::add_sources(tx, space, id, 1, &input.source_refs).await?;
+        Self::add_links(tx, space, id, 1, &input.links).await?;
+        Self::schedule(tx, space, id, 1).await?;
+        self.receipt(tx, space, "remember", input.request_id, hash, (id, Some(1)))
+            .await?;
         Ok(
             json!({"memory_id":id,"revision":1,"readable":true,"processing_state":"index_pending","evidence_status":if input.source_refs.is_empty(){"unverified"}else{"source_linked"}}),
         )
     }
 
     pub async fn correct(&self, space: SpaceId, input: Correct) -> Result<Value> {
+        let tx = self.begin(space).await?;
+        let result = self.correct_tx(&tx, space, input).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    pub(super) async fn correct_tx(
+        &self,
+        tx: &DatabaseTransaction,
+        space: SpaceId,
+        input: Correct,
+    ) -> Result<Value> {
         bounded(&input.reason, 4000)?;
-        if input.content.is_none() && input.scope.is_none() {
-            return Err(Error::invalid("至少修改正文或适用范围"));
+        if input.content.is_none()
+            && input.scope.is_none()
+            && input.memory_type.is_none()
+            && input.links.is_none()
+        {
+            return Err(Error::invalid("至少修改正文、适用范围、记忆类型或引用关系"));
         }
         if let Some(value) = &input.content {
             bounded(value, 16000)?;
         }
         let hash = Self::hash(&input)?;
-        let tx = self.begin(space).await?;
         if let Some(result) = self
-            .replay(&tx, space, "correct_memory", input.request_id, &hash)
+            .replay(tx, space, "correct_memory", input.request_id, &hash)
             .await?
         {
             return Ok(result);
         }
-        let head = Self::head(&tx, space, input.memory_id).await?;
+        let head = Self::head(tx, space, input.memory_id).await?;
         if head.forgotten_at.is_some() {
             return Err(Error::missing());
         }
@@ -195,10 +234,19 @@ impl Store {
             space.bytes(),
             input.memory_id.as_bytes().to_vec(),
         ))
-        .one(&tx)
+        .one(tx)
         .await?
         .is_some()
         {
+            if input
+                .memory_type
+                .is_some_and(|kind| kind != crate::knowledge::MemoryType::Note)
+                || input.links.as_ref().is_some_and(|links| !links.is_empty())
+            {
+                return Err(Error::invalid(
+                    "Secret 只维护公开说明和范围，不能改为主题或派生记忆",
+                ));
+            }
             if let Some(content) = &input.content {
                 bounded(content, 256)?;
             }
@@ -212,7 +260,12 @@ impl Store {
                 ));
             }
         }
-        let previous = Self::revision(&tx, &head).await?;
+        let previous = Self::revision(tx, &head).await?;
+        let links = match &input.links {
+            Some(links) => links.clone(),
+            None => Self::links(tx, space, input.memory_id, head.current_revision).await?,
+        };
+        Self::check_links(tx, space, input.memory_id, &links, input.links.is_none()).await?;
         let refs = match &input.source_refs {
             Some(refs) => refs
                 .iter()
@@ -222,13 +275,13 @@ impl Store {
                 .filter(memory_sources::Column::SpaceId.eq(space.bytes()))
                 .filter(memory_sources::Column::MemoryId.eq(head.id.clone()))
                 .filter(memory_sources::Column::Revision.eq(head.current_revision))
-                .all(&tx)
+                .all(tx)
                 .await?
                 .into_iter()
                 .map(|v| uuid_from_bytes(&v.event_id))
                 .collect::<Result<Vec<_>>>()?,
         };
-        Self::check_sources(&tx, space, &refs).await?;
+        Self::check_sources(tx, space, &refs).await?;
         let revision = head
             .current_revision
             .checked_add(1)
@@ -246,17 +299,22 @@ impl Store {
             change_reason: Set(Some(input.reason)),
             created_at: Set(now()),
             agent_id: Set(self.actor_bytes()),
+            memory_type: Set(input
+                .memory_type
+                .map(|kind| kind.as_str().to_owned())
+                .unwrap_or(previous.memory_type)),
         }
-        .insert(&tx)
+        .insert(tx)
         .await?;
-        Self::add_sources(&tx, space, input.memory_id, revision, &refs).await?;
+        Self::add_sources(tx, space, input.memory_id, revision, &refs).await?;
+        Self::add_links(tx, space, input.memory_id, revision, &links).await?;
         let mut active = head.into_active_model();
         active.current_revision = Set(revision);
         active.updated_at = Set(now());
-        active.update(&tx).await?;
-        Self::schedule(&tx, space, input.memory_id, revision).await?;
+        active.update(tx).await?;
+        Self::schedule(tx, space, input.memory_id, revision).await?;
         self.receipt(
-            &tx,
+            tx,
             space,
             "correct_memory",
             input.request_id,
@@ -264,7 +322,6 @@ impl Store {
             (input.memory_id, Some(revision)),
         )
         .await?;
-        tx.commit().await?;
         Ok(
             json!({"memory_id":input.memory_id,"revision":revision,"readable":true,"processing_state":"index_pending"}),
         )
@@ -331,6 +388,8 @@ impl Store {
                 active.update(&tx).await?;
             }
         }
+        Self::include_derived_forget(&tx, space, &mut affected).await?;
+        Self::clear_knowledge_snapshots(&tx, space).await?;
         for id in &affected {
             let head = Self::head(&tx, space, *id).await?;
             let version = head.current_revision;

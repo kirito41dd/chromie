@@ -167,7 +167,7 @@ async fn authenticate(
     check_origin(request.headers(), guard.origin.as_deref())?;
     let cookie_only = matches!(
         request.uri().path().split('/').nth(3),
-        Some("agents" | "messages" | "system" | "transfer")
+        Some("agents" | "messages" | "system" | "transfer" | "knowledge")
     );
     let space = if !cookie_only && request.headers().contains_key("x-chromie-password") {
         guard
@@ -218,6 +218,7 @@ pub(crate) fn routes(
     );
     let data = Router::new()
         .merge(crate::system_http::routes(&prefix))
+        .merge(crate::knowledge_http::routes(&prefix))
         .merge(crate::transfer_http::routes(
             &prefix,
             guard.auth.clone(),
@@ -233,6 +234,10 @@ pub(crate) fn routes(
         .route(
             &format!("{prefix}/messages/sessions"),
             post(crate::messages::sessions).layer(DefaultBodyLimit::max(2048)),
+        )
+        .route(
+            &format!("{prefix}/messages/title"),
+            post(crate::messages::title).layer(DefaultBodyLimit::max(2048)),
         )
         .route(
             &format!("{prefix}/messages/conversation"),

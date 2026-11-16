@@ -129,6 +129,8 @@ async fn short_space_keys_are_unique_and_rename_preserves_data_and_authenticatio
         .remember(
             work,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: "更改空间标识时保留的虚构记忆".into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
@@ -206,6 +208,8 @@ async fn dashboard_is_read_only_private_and_space_scoped() {
             .remember(
                 work,
                 Remember {
+                    memory_type: Default::default(),
+                    links: Vec::new(),
                     content: "看板只显示本空间已经保存的虚构决定。".into(),
                     request_id: Uuid::now_v7(),
                     scope: Scope::Global,
@@ -324,6 +328,8 @@ async fn dashboard_is_read_only_private_and_space_scoped() {
         .correct(
             work,
             Correct {
+                memory_type: Default::default(),
+                links: None,
                 memory_id: id,
                 expected_revision: 1,
                 request_id: Uuid::now_v7(),
@@ -389,6 +395,8 @@ async fn durable_memory_workflow() {
     );
 
     let request = Remember {
+        memory_type: Default::default(),
+        links: Vec::new(),
         content: "Chromie 使用 MySQL 保存数据，采用 schema-first。".into(),
         request_id: Uuid::now_v7(),
         scope: Scope::Project {
@@ -411,6 +419,8 @@ async fn durable_memory_workflow() {
             .remember(
                 life,
                 Remember {
+                    memory_type: Default::default(),
+                    links: Vec::new(),
                     content: "生活空间的虚构独立记忆".into(),
                     request_id: Uuid::now_v7(),
                     scope: Scope::Global,
@@ -476,6 +486,8 @@ async fn durable_memory_workflow() {
     assert_eq!(evidence["sources"][0]["event_id"], original.id.to_string());
 
     let correction = Correct {
+        memory_type: Default::default(),
+        links: None,
         memory_id: id,
         expected_revision: 1,
         request_id: Uuid::now_v7(),
@@ -687,7 +699,7 @@ async fn http_auth_and_mcp() {
     let initialized = mcp(&client, &url, &mcp_key, "initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"chromie-test","version":"0"}})).await;
     assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
     let tools = mcp(&client, &url, &mcp_key, "tools/list", json!({})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 10);
     let guide = mcp(
         &client,
         &url,
@@ -759,7 +771,7 @@ async fn http_auth_and_mcp() {
         401
     );
     let changed = mcp(&client, &url, &mcp_key, "tools/list", json!({})).await;
-    assert_eq!(changed["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(changed["result"]["tools"].as_array().unwrap().len(), 10);
     let model = entity::spaces::Entity::find_by_id(work.bytes())
         .one(&store.db)
         .await
@@ -811,6 +823,8 @@ async fn pagination_recovery_and_project_scope() {
             .remember(
                 work,
                 Remember {
+                    memory_type: Default::default(),
+                    links: Vec::new(),
                     content: original.clone(),
                     request_id: Uuid::now_v7(),
                     scope: Scope::Project {
@@ -865,6 +879,8 @@ async fn pagination_recovery_and_project_scope() {
             .remember(
                 work,
                 Remember {
+                    memory_type: Default::default(),
+                    links: Vec::new(),
                     content: "恢复验证 recovery_marker".into(),
                     request_id: Uuid::now_v7(),
                     scope: Scope::Global,

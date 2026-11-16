@@ -22,6 +22,14 @@ mod m20261104_000013_similarity_threshold;
 mod m20261104_000014_embedding_batch;
 
 mod m20261104_000015_soul_transfer;
+mod m20261111_134801_memory_graph;
+mod m20261111_135824_knowledge_jobs;
+
+mod m20261112_120000_providers_organization;
+
+mod m20261112_120100_text_output_budget;
+
+mod m20261113_000001_conversation_extraction;
 
 pub struct Migrator;
 
@@ -44,6 +52,11 @@ impl MigratorTrait for Migrator {
             Box::new(m20261104_000013_similarity_threshold::Migration),
             Box::new(m20261104_000014_embedding_batch::Migration),
             Box::new(m20261104_000015_soul_transfer::Migration),
+            Box::new(m20261111_134801_memory_graph::Migration),
+            Box::new(m20261111_135824_knowledge_jobs::Migration),
+            Box::new(m20261112_120000_providers_organization::Migration),
+            Box::new(m20261112_120100_text_output_budget::Migration),
+            Box::new(m20261113_000001_conversation_extraction::Migration),
         ]
     }
 }

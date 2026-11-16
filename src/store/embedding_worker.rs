@@ -284,11 +284,12 @@ impl Store {
         Ok(done)
     }
 
-    pub(super) async fn embedding_candidates(
+    pub(super) async fn embedding_candidates_guarded(
         &self,
         space: SpaceId,
         query: &str,
         project: Option<&str>,
+        admission: Option<&super::knowledge_worker::KnowledgeAdmission<'_>>,
     ) -> Result<(Vec<crate::search::SearchHit>, Value, Option<SemanticFilter>)> {
         let started = Instant::now();
         let Some(row) = settings::Entity::find_by_id(1u8).one(&self.db).await? else {
@@ -346,10 +347,12 @@ impl Store {
             ));
         }
         let result: Result<(Vec<crate::search::SearchHit>, Option<SemanticFilter>)> = async {
-            let connection = self.model_connection(&generation)?;
+            let connection = self.model_connection(&generation).await?;
             let vector = self
-                .embed_model(&connection, query, Duration::from_secs(3))
-                .await?;
+                .embed_model_batch_guarded(&connection, &[query], Duration::from_secs(3), admission)
+                .await?
+                .pop()
+                .ok_or_else(Error::unavailable)?;
             let threshold = crate::retrieval_policy::resolve(
                 &connection.profile,
                 generation.similarity_threshold,

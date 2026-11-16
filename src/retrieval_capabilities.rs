@@ -45,4 +45,14 @@ pub struct Capabilities {
     pub space: String,
     pub cache_ttl_seconds: u32,
     pub retrieval: RetrievalCapabilities,
+    pub knowledge: KnowledgeCapabilities,
+}
+
+#[derive(Serialize)]
+pub struct KnowledgeCapabilities {
+    pub references: bool,
+    pub backlinks: bool,
+    pub topic_navigation: bool,
+    pub max_links_per_memory: u32,
+    pub background_llm: bool,
 }

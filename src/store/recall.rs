@@ -1,5 +1,6 @@
 use super::{read::budget, *};
 use crate::{
+    retrieval_policy::{KeywordMatch, KeywordQuery},
     search::{CANDIDATE_LIMIT, TEXT_FIELD},
     types::{Recall, bounded, output_budget},
 };
@@ -29,6 +30,7 @@ struct Candidate {
     indexed_revision: Option<i32>,
     semantic_score: Option<f32>,
     fusion_score: Option<f64>,
+    keyword_match: Option<KeywordMatch>,
 }
 
 #[derive(Clone, Serialize)]
@@ -40,6 +42,7 @@ struct HitDebug {
     score_matches_revision: Option<bool>,
     semantic_score: Option<f32>,
     fusion_score: Option<f64>,
+    keyword_match: Option<KeywordMatch>,
 }
 
 impl Candidate {
@@ -60,21 +63,37 @@ impl Candidate {
                 .semantic_score
                 .filter(|score| score.is_finite() && matches == Some(true)),
             fusion_score: self.fusion_score.filter(|_| matches != Some(false)),
+            keyword_match: self.keyword_match.filter(|_| matches == Some(true)),
         }
     }
 }
 
 impl Store {
     pub async fn recall(&self, space: SpaceId, input: Recall) -> Result<Value> {
-        self.recall_inner(space, input, false).await
+        self.recall_inner(space, input, false, None).await
     }
 
     pub(crate) async fn recall_debug(&self, space: SpaceId, input: Recall) -> Result<Value> {
-        self.recall_inner(space, input, true).await
+        self.recall_inner(space, input, true, None).await
     }
 
     // 普通 MCP 和 Web 诊断共用候选选择与预算，诊断只改变额外的元数据。
-    async fn recall_inner(&self, space: SpaceId, input: Recall, with_debug: bool) -> Result<Value> {
+    pub(super) async fn recall_for_knowledge(
+        &self,
+        space: SpaceId,
+        input: Recall,
+        admission: &super::knowledge_worker::KnowledgeAdmission<'_>,
+    ) -> Result<Value> {
+        self.recall_inner(space, input, false, Some(admission))
+            .await
+    }
+    async fn recall_inner(
+        &self,
+        space: SpaceId,
+        input: Recall,
+        with_debug: bool,
+        admission: Option<&super::knowledge_worker::KnowledgeAdmission<'_>>,
+    ) -> Result<Value> {
         let started = Instant::now();
         bounded(&input.query, 256)?;
         let maximum = output_budget(input.max_chars)?;
@@ -96,7 +115,12 @@ impl Store {
         let (search, semantic) = tokio::join!(
             self.search
                 .query_report(space, &input.query, input.project_key.as_deref()),
-            self.embedding_candidates(space, &input.query, input.project_key.as_deref())
+            self.embedding_candidates_guarded(
+                space,
+                &input.query,
+                input.project_key.as_deref(),
+                admission
+            )
         );
         let (semantic_hits, mut embedding_debug, semantic_filter) =
             semantic.unwrap_or_else(|error| {
@@ -129,6 +153,7 @@ impl Store {
                             indexed_revision: Some(hit.revision),
                             semantic_score: None,
                             fusion_score: None,
+                            keyword_match: None,
                         });
                     }
                     Ok(_) => {}
@@ -184,6 +209,7 @@ impl Store {
                     indexed_revision: None,
                     semantic_score: None,
                     fusion_score: None,
+                    keyword_match: None,
                 });
             }
         }
@@ -200,6 +226,7 @@ impl Store {
                         indexed_revision: Some(hit.revision),
                         semantic_score: Some(hit.score),
                         fusion_score: None,
+                        keyword_match: None,
                     })
                 }
                 Ok(_) => {}
@@ -235,6 +262,17 @@ impl Store {
             let id = candidate.id;
             if !seen.insert(id) {
                 duplicates += 1;
+                continue;
+            }
+            if admission.is_some()
+                && crate::entity::secrets::Entity::find_by_id((
+                    space.bytes(),
+                    id.as_bytes().to_vec(),
+                ))
+                .one(&self.db)
+                .await?
+                .is_some()
+            {
                 continue;
             }
             let card = match Self::card(&self.db, space, id, None).await {
@@ -279,12 +317,14 @@ impl Store {
             maximum,
         );
         // 只统计最终交付的条目；统计故障不掩盖已经取得的记忆结果。
-        match self.record_recall(space, &result, with_debug).await {
-            Ok(id) => result["recall_id"] = json!(id),
-            Err(error) => {
-                tracing::warn!(code = error.code, "召回统计未记录");
-                result["recall_id"] = Value::Null;
-                result["usage_available"] = json!(false);
+        if admission.is_none() {
+            match self.record_recall(space, &result, with_debug).await {
+                Ok(id) => result["recall_id"] = json!(id),
+                Err(error) => {
+                    tracing::warn!(code = error.code, "召回统计未记录");
+                    result["recall_id"] = Value::Null;
+                    result["usage_available"] = json!(false);
+                }
             }
         }
         if with_debug {
@@ -390,7 +430,9 @@ impl Store {
             }
             Err(_) => false,
         };
-        let (mut removed, mut literals, mut unscored) = (0usize, 0usize, 0usize);
+        let query = KeywordQuery::new(&input.query);
+        let (mut removed, mut literals, mut covered, mut unscored) =
+            (0usize, 0usize, 0usize, 0usize);
         let mut kept = Vec::with_capacity(keyword.len());
         for mut row in keyword.drain(..) {
             if matches!(row.path, MatchPath::QdrantBm25) {
@@ -412,14 +454,17 @@ impl Store {
                             continue;
                         }
                         let current = Self::revision(&self.db, &head).await?;
-                        if !crate::retrieval_policy::literal_match(
-                            &input.query,
-                            current.content.as_deref().unwrap_or_default(),
-                        ) {
+                        let Some(evidence) =
+                            query.matches(current.content.as_deref().unwrap_or_default())
+                        else {
                             removed += 1;
                             continue;
+                        };
+                        match evidence {
+                            KeywordMatch::Literal => literals += 1,
+                            KeywordMatch::FullCoverage { .. } => covered += 1,
                         }
-                        literals += 1;
+                        row.keyword_match = Some(evidence);
                     }
                     row.semantic_score = Some(score);
                 } else {
@@ -437,7 +482,7 @@ impl Store {
         Ok(
             json!({"method":"candidate_gate","threshold":filter.threshold.value(),
             "filtered_keyword":removed,"filtered_semantic":before-semantic.len(),
-            "literal_kept":literals,"unscored_keyword":unscored,"score_lookup_available":lookup_available}),
+            "literal_kept":literals,"full_coverage_kept":covered,"unscored_keyword":unscored,"score_lookup_available":lookup_available}),
         )
     }
 }
@@ -497,6 +542,7 @@ mod tests {
             indexed_revision: Some(1),
             semantic_score: None,
             fusion_score: None,
+            keyword_match: None,
         };
         let semantic = |id, score| Candidate {
             id,
@@ -505,6 +551,7 @@ mod tests {
             indexed_revision: Some(1),
             semantic_score: Some(score),
             fusion_score: None,
+            keyword_match: None,
         };
         let result = fuse(
             vec![keyword(a, 1_000_000.0), keyword(b, 0.01)],
@@ -534,10 +581,13 @@ mod tests {
             indexed_revision: Some(1),
             semantic_score: None,
             fusion_score: None,
+            keyword_match: Some(KeywordMatch::FullCoverage { parts: 2 }),
         };
         assert_eq!(candidate.debug(Some(1)).bm25_score, Some(2.5));
+        assert!(candidate.debug(Some(1)).keyword_match.is_some());
         let changed = candidate.debug(Some(2));
         assert_eq!(changed.bm25_score, None);
+        assert_eq!(changed.keyword_match, None);
         assert_eq!(changed.indexed_revision, Some(1));
         assert_eq!(changed.score_matches_revision, Some(false));
         let fallback = Candidate {
@@ -547,6 +597,7 @@ mod tests {
             indexed_revision: None,
             semantic_score: None,
             fusion_score: None,
+            keyword_match: None,
         };
         assert_eq!(fallback.debug(Some(2)).bm25_score, None);
         assert_eq!(fallback.debug(Some(2)).score_matches_revision, None);

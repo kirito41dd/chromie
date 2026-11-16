@@ -15,6 +15,7 @@ use sea_orm::{
 use std::time::Duration;
 
 struct PreparedSettings {
+    provider: Option<crate::entity::model_providers::Model>,
     current: settings::Model,
     target: Option<generations::Model>,
     connection: Connection,
@@ -107,7 +108,7 @@ impl Store {
             .ok_or_else(Error::unavailable)
     }
 
-    pub(super) fn model_connection(&self, row: &generations::Model) -> Result<Connection> {
+    pub(super) fn legacy_model_connection(&self, row: &generations::Model) -> Result<Connection> {
         let key = match (&row.key_cipher, &row.key_nonce, &row.key_id) {
             (Some(bytes), Some(nonce), Some(key_id)) => {
                 let plain = self.cipher()?.open_model(
@@ -133,6 +134,19 @@ impl Store {
                 .map_err(|_| Error::unavailable())?,
             key,
         })
+    }
+
+    pub(super) async fn model_connection(&self, row: &generations::Model) -> Result<Connection> {
+        if let Some(id) = &row.provider_id {
+            let provider = Self::provider(&self.db, uuid_from_bytes(id)?).await?;
+            return Ok(Connection {
+                base_url: provider.base_url.clone(),
+                profile: serde_json::from_value(row.profile.clone())
+                    .map_err(|_| Error::unavailable())?,
+                key: self.provider_key(&provider)?,
+            });
+        }
+        self.legacy_model_connection(row)
     }
 
     pub async fn model_settings(&self, space: SpaceId) -> Result<Value> {
@@ -162,13 +176,17 @@ impl Store {
     ) -> Result<Value> {
         let profile: crate::embedding::Profile =
             serde_json::from_value(row.profile.clone()).map_err(|_| Error::unavailable())?;
+        let provider = match &row.provider_id {
+            Some(id) => Some(Self::provider(&self.db, uuid_from_bytes(id)?).await?),
+            None => None,
+        };
         let concurrency = self.model_limit(&profile.model).await?.max;
         let threshold = crate::retrieval_policy::resolve(&profile, row.similarity_threshold)?;
         let recommended = crate::retrieval_policy::recommended(&profile);
         let batch_size = crate::embedding_batch::BatchSize::resolve(&profile, row.batch_size)?;
         Ok(
-            json!({"generation_id":uuid_from_bytes(&row.id)?,"profile":row.profile,"base_url":row.base_url,
-            "has_api_key":row.key_cipher.is_some(),"max_concurrency":concurrency,
+            json!({"generation_id":uuid_from_bytes(&row.id)?,"profile":row.profile,"provider_id":row.provider_id.as_deref().map(uuid_from_bytes).transpose()?,"base_url":provider.as_ref().map_or(row.base_url.as_str(),|p|p.base_url.as_str()),
+            "has_api_key":provider.as_ref().map_or(row.key_cipher.is_some(),|p|p.key_cipher.is_some()),"max_concurrency":concurrency,
             "similarity_threshold":threshold,"similarity_threshold_override":row.similarity_threshold,"recommended_similarity_threshold":recommended,
             "batch_size":batch_size,"batch_size_override":row.batch_size,
             "state":row.state,"progress":Self::embedding_progress(&self.db,&row.id,space).await?,"scan_complete":row.scan_complete!=0}),
@@ -312,7 +330,18 @@ impl Store {
         input: &Save,
     ) -> Result<PreparedSettings> {
         self.check_model_admin(space).await?;
-        let base_url = validate_url(&input.base_url)?;
+        let provider = match input.provider_id {
+            Some(id) => Some(Self::provider(&self.db, id).await?),
+            None => None,
+        };
+        if provider.is_some() && (input.api_key.is_some() || input.clear_api_key) {
+            return Err(Error::invalid("已选择服务商，请在服务商配置中修改 API Key"));
+        }
+        let base_url = if let Some(provider) = &provider {
+            provider.base_url.clone()
+        } else {
+            validate_url(&input.base_url)?
+        };
         let profile = input.profile();
         profile.validate()?;
         let max_concurrency = match input.max_concurrency {
@@ -342,16 +371,34 @@ impl Store {
             Some(id) => Some(Self::generation(&self.db, id).await?),
             None => None,
         };
-        let key = if input.clear_api_key {
+        let previous_connection = if input.provider_id.is_none() {
+            match &target {
+                Some(row) => Some(self.model_connection(row).await?),
+                None => None,
+            }
+        } else {
+            None
+        };
+        if provider.is_none()
+            && target.as_ref().is_some_and(|row| row.provider_id.is_some())
+            && !input.clear_api_key
+            && input.api_key.as_ref().is_none_or(|key| key.is_empty())
+            && previous_connection
+                .as_ref()
+                .is_some_and(|old| old.key.is_some() && old.base_url != base_url)
+        {
+            return Err(Error::invalid(
+                "更换服务地址须重新提供 API Key，或明确清除旧 Key",
+            ));
+        }
+        let key = if let Some(provider) = &provider {
+            self.provider_key(provider)?
+        } else if input.clear_api_key {
             None
         } else if let Some(value) = input.api_key.as_ref().filter(|value| !value.is_empty()) {
             Some(Zeroizing::new(value.clone()))
         } else {
-            target
-                .as_ref()
-                .map(|row| self.model_connection(row))
-                .transpose()?
-                .and_then(|connection| connection.key)
+            previous_connection.and_then(|connection| connection.key)
         };
         // 省略字段兼容旧客户端；新模型不继承旧模型的自定义阈值。
         let profile_fingerprint = profile.fingerprint()?;
@@ -374,6 +421,7 @@ impl Store {
                 .transpose()?,
         };
         Ok(PreparedSettings {
+            provider,
             current: before,
             target,
             max_concurrency,
@@ -400,6 +448,7 @@ impl Store {
 
     pub async fn save_model_settings(&self, space: SpaceId, input: Save) -> Result<Value> {
         let PreparedSettings {
+            provider,
             current: before,
             target,
             connection,
@@ -418,6 +467,8 @@ impl Store {
         }
         let model_name = connection.profile.model.clone();
         if !rebuild
+            && target.as_ref().and_then(|row| row.provider_id.as_deref())
+                == provider.as_ref().map(|p| p.id.as_slice())
             && target
                 .as_ref()
                 .is_some_and(|row| row.base_url == connection.base_url)
@@ -473,8 +524,12 @@ impl Store {
                 .checked_add(1)
                 .ok_or_else(Error::unavailable)?
         };
+        if let Some(provider) = &provider {
+            Self::validate_provider(&tx, provider).await?;
+        }
         let envelope = key
             .as_ref()
+            .filter(|_| provider.is_none())
             .map(|key| {
                 self.cipher()?
                     .seal_model(id, connection_revision, key.as_bytes())
@@ -499,6 +554,7 @@ impl Store {
         } else {
             target.ok_or_else(Error::unavailable)?.into_active_model()
         };
+        generation.provider_id = Set(provider.as_ref().map(|p| p.id.clone()));
         generation.base_url = Set(base_url);
         generation.connection_revision = Set(connection_revision);
         generation.key_id = Set(envelope

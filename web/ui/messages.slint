@@ -1,6 +1,6 @@
 import { SelectableText, SelectableArea } from "selectable-text.slint";
 import { ComboBox } from "std-widgets.slint";
-import { Theme, ActionButton } from "common.slint";
+import { Theme, ActionButton, InputField } from "common.slint";
 
 export struct ConversationRow { title:string, preview:string, meta:string }
 export struct CapturedRow { id:string, role:string, user:bool, body:string, time:string, metadata:string, truncated:bool }
@@ -43,6 +43,13 @@ component ThreadPane inherits Rectangle {
     in property <bool> busy;
     in property <bool> selected;
     in property <string> title;
+    in property <string> info;
+    in property <string> history;
+    in property <bool> title-locked;
+    in-out property <string> title-draft;
+    private property <bool> editing-title;
+    private property <bool> show-history;
+    callback save-title(bool);
     in property <[CapturedRow]> messages;
     in property <int> page;
     in property <bool> more;
@@ -50,7 +57,7 @@ component ThreadPane inherits Rectangle {
     in property <string> full-body;
     in property <string> full-note;
     private property <string> debug-id;
-    changed title=>{root.debug-id="";}
+    changed title=>{root.debug-id="";root.editing-title=false;root.show-history=false;}
     changed page=>{root.debug-id="";}
     callback back;
     callback turn(int);
@@ -68,6 +75,17 @@ component ThreadPane inherits Rectangle {
                 if root.compact: ActionButton {label:"返回会话";width:90px;height:34px;subtle:true;activated=>{root.back();}}
                 SelectableText {text:root.title;text-color:Theme.ink;font-size:14px;font-weight:600;wrap:word-wrap;vertical-alignment:center;horizontal-stretch:1;min-width:0px;}
             }
+            SelectableText {text:root.info;text-color:Theme.muted;font-size:12px;wrap:word-wrap;}
+            HorizontalLayout {spacing:8px;alignment:start;
+                ActionButton {label:root.editing-title?"取消命名":"固定标题";height:30px;min-width:76px;subtle:true;disabled:root.busy;activated=>{root.editing-title=!root.editing-title;}}
+                if root.title-locked: ActionButton {label:"恢复自动";height:30px;min-width:76px;subtle:true;disabled:root.busy;activated=>{root.save-title(false);}}
+                if root.history!="": ActionButton {label:root.show-history?"收起历史":"标题历史";height:30px;min-width:76px;subtle:true;activated=>{root.show-history=!root.show-history;}}
+            }
+            if root.editing-title: HorizontalLayout {spacing:8px;
+                InputField {value <=> root.title-draft;hint:"输入简短标题";disabled:root.busy;horizontal-stretch:1;}
+                ActionButton {label:"保存";min-width:64px;disabled:root.busy||root.title-draft=="";activated=>{root.save-title(true);root.editing-title=false;}}
+            }
+            if root.show-history: SelectableText {text:root.history;text-color:Theme.secondary;font-size:12px;wrap:word-wrap;}
             Text {text:"按消息时间排列 · 当前为第 "+(root.page+1)+" 页，最近一页为第 1 页";color:Theme.muted;font-size:11px;wrap:word-wrap;}
             if root.messages.length==0: Rectangle {height:100px;background:Theme.paper;border-radius:10px;
                 Text {text:root.busy?"正在读取消息…":"此会话暂无可显示的消息";color:Theme.muted;font-size:12px;horizontal-alignment:center;vertical-alignment:center;}
@@ -111,6 +129,11 @@ export component MessagesPage inherits Rectangle {
     in property <int> session-page;
     in property <bool> sessions-more;
     in property <string> thread-title;
+    in property <string> thread-info;
+    in property <string> title-history;
+    in property <bool> title-locked;
+    in-out property <string> title-draft;
+    callback save-title(bool);
     in property <[CapturedRow]> messages;
     in property <int> message-page;
     in property <bool> messages-more;
@@ -153,11 +176,11 @@ export component MessagesPage inherits Rectangle {
                 Rectangle {vertical-stretch:1;}
             }
             VerticalLayout {horizontal-stretch:1;
-                ThreadPane {compact:false;busy:root.busy;selected:root.selected>=0;title:root.thread-title;messages:root.messages;page:root.message-page;more:root.messages-more;expanded:root.expanded;full-body:root.full-body;full-note:root.full-note;turn(direction)=>{root.turn-messages(direction);}expand(id)=>{root.expand(id);}}
+                ThreadPane {compact:false;busy:root.busy;selected:root.selected>=0;title:root.thread-title;info:root.thread-info;history:root.title-history;title-locked:root.title-locked;title-draft <=> root.title-draft;save-title(fixed)=>{root.save-title(fixed);}messages:root.messages;page:root.message-page;more:root.messages-more;expanded:root.expanded;full-body:root.full-body;full-note:root.full-note;turn(direction)=>{root.turn-messages(direction);}expand(id)=>{root.expand(id);}}
                 Rectangle {vertical-stretch:1;}
             }
         }
         if !root.wide && root.selected<0: SessionPane {compact:root.compact;busy:root.busy;sessions:root.sessions;selected:root.selected;page:root.session-page;more:root.sessions-more;select(index)=>{root.select(index);}turn(direction)=>{root.turn-sessions(direction);}}
-        if !root.wide && root.selected>=0: ThreadPane {compact:true;busy:root.busy;selected:true;title:root.thread-title;messages:root.messages;page:root.message-page;more:root.messages-more;expanded:root.expanded;full-body:root.full-body;full-note:root.full-note;back=>{root.select(-1);}turn(direction)=>{root.turn-messages(direction);}expand(id)=>{root.expand(id);}}
+        if !root.wide && root.selected>=0: ThreadPane {compact:true;busy:root.busy;selected:true;title:root.thread-title;info:root.thread-info;history:root.title-history;title-locked:root.title-locked;title-draft <=> root.title-draft;save-title(fixed)=>{root.save-title(fixed);}messages:root.messages;page:root.message-page;more:root.messages-more;expanded:root.expanded;full-body:root.full-body;full-note:root.full-note;back=>{root.select(-1);}turn(direction)=>{root.turn-messages(direction);}expand(id)=>{root.expand(id);}}
     }
 }

@@ -70,6 +70,38 @@ impl MemoryMcp {
     }
 
     #[tool(
+        description = "分页查看当前空间的简短主题导航，了解已保存哪些领域及入口；不调用模型。按需 get_memory 阅读主题，再用 get_memory_links 沿引用读取。project_key 只填已知值，返回该项目和空间通用主题。",
+        annotations(read_only_hint = true, destructive_hint = false)
+    )]
+    async fn get_navigation(
+        &self,
+        Parameters(input): Parameters<crate::knowledge::Navigation>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let store = match self.authorized_store(&context).await {
+            Ok(store) => store,
+            Err(error) => return result(Err(error)),
+        };
+        result(store.navigation(self.space, input).await)
+    }
+
+    #[tool(
+        description = "分页读取记忆的结构化引用；incoming=true 查看当前仍引用它的记忆，默认查看它引用的内容。只返回简短入口，按需 get_memory 阅读，避免展开整张图。derived_from 固定依据修订，needs_review 表示依据已有变化；关联不等于直接命中或事实已验证。",
+        annotations(read_only_hint = true, destructive_hint = false)
+    )]
+    async fn get_memory_links(
+        &self,
+        Parameters(input): Parameters<crate::knowledge::Neighbors>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let store = match self.authorized_store(&context).await {
+            Ok(store) => store,
+            Err(error) => return result(Err(error)),
+        };
+        result(store.memory_neighbors(self.space, input).await)
+    }
+
+    #[tool(
         description = "首次检索前读取当前空间的检索能力，按 mode 选择关键词或自然问法；可按 cache_ttl_seconds 短期缓存。返回语义状态和配置修订，不调用模型、不探活、不返回连接或密钥。快照不保证下一次请求成功，以 recall 的实际路径为准；配置变化或降级时刷新。",
         annotations(read_only_hint = true, destructive_hint = false)
     )]
@@ -198,7 +230,7 @@ impl MemoryMcp {
     }
 
     #[tool(
-        description = "按用户意图保存值得保留的信息到跨对话、跨设备共享的记忆空间。让未来缺少当前对话背景的读取者也能理解；具体组织方式与必要上下文由 Agent 按内容判断，不强求固定模板或机器信息，不编造背景；附真实来源引用。禁止传入密码或密钥原文。request_id 必须为 UUID，重试时复用。",
+        description = "保存可跨对话复用的明确结论，附真实消息来源。memory_type 可选 note／topic；links 使用真实记忆 ID，派生依据填写已读取的当前修订。正文组织由 Agent 判断，禁止传入密码或密钥原文。request_id 使用 UUID，重试复用。",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

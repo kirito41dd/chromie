@@ -41,6 +41,7 @@ async fn embed(
 }
 fn input(url: &str, model: &str) -> Save {
     Save {
+        provider_id: None,
         similarity_threshold: None,
         batch_size: None,
         expected_revision: 0,

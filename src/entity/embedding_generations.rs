@@ -28,6 +28,8 @@ pub struct Model {
     #[sea_orm(column_type = "Double", nullable)]
     pub similarity_threshold: Option<f64>,
     pub batch_size: Option<u32>,
+    #[sea_orm(column_type = "Binary(16)", nullable)]
+    pub provider_id: Option<Vec<u8>>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

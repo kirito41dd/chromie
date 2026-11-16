@@ -47,6 +47,7 @@ impl Store {
         }
         .insert(&tx)
         .await?;
+        let mut relations = Vec::new();
         for item in preview.items {
             if item.status != "new" {
                 continue;
@@ -65,6 +66,7 @@ impl Store {
             .insert(&tx)
             .await?;
             memory_revisions::ActiveModel {
+                memory_type: Set(row.memory_type.as_str().into()),
                 space_id: Set(space.bytes()),
                 memory_id: Set(id.as_bytes().to_vec()),
                 revision: Set(1),
@@ -79,6 +81,7 @@ impl Store {
             }
             .insert(&tx)
             .await?;
+            relations.push((id, row.links));
             if let Some(secret) = row.secret {
                 let cipher = self.cipher()?;
                 let envelope = cipher.seal(space, id, 1, &secret.value.0)?;
@@ -109,6 +112,10 @@ impl Store {
             .insert(&tx)
             .await?;
             Self::schedule(&tx, space, id, 1).await?;
+        }
+        for (id, links) in relations {
+            Self::check_links(&tx, space, id, &links, false).await?;
+            Self::add_links(&tx, space, id, 1, &links).await?;
         }
         tx.commit().await?;
         Ok(result)

@@ -1,0 +1,120 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme, ActionButton } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export struct KnowledgeRow { id: string, title: string, note: string, needs-review: bool }
+
+component KnowledgeLink inherits Rectangle {
+    in property <KnowledgeRow> item;
+    callback activated;
+    height: 58px; min-width: 0px;
+    border-radius: 8px; border-width: keyboard.has-focus ? 1px : 0px; border-color: Theme.accent;
+    background: touch.has-hover ? #f5f3fc : transparent;
+    accessible-role: button; accessible-label: root.item.title;
+    accessible-action-default => { root.activated(); }
+    forward-focus: keyboard;
+    VerticalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 5px; alignment: center;
+        Text { text: root.item.title; color: Theme.ink; font-size: 14px; overflow: elide; wrap: no-wrap; }
+        Text { text: root.item.note; color: root.item.needs-review ? #9a6700 : Theme.muted; font-size: 11px; overflow: elide; wrap: no-wrap; }
+    }
+    keyboard := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => { if !event.repeat && (event.text == Key.Return || event.text == " ") { root.activated(); accept } else { reject } }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.activated(); } }
+}
+
+export component TopicNavigation inherits Rectangle {
+    in property <[KnowledgeRow]> topics;
+    in property <bool> busy;
+    in property <bool> more;
+    in property <string> error;
+    callback open(string);
+    callback next;
+    callback refresh;
+    height: layout.preferred-height;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    layout := VerticalLayout {
+        padding: 18px; spacing: 10px;
+        HorizontalLayout {
+            height: 32px; spacing: 8px; cross-axis-alignment: center;
+            Text { text: "主题导航"; color: Theme.ink; font-size: 16px; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            ActionButton { label: "刷新"; subtle: true; height: 30px; min-width: 52px; disabled: root.busy; activated => { root.refresh(); } }
+        }
+        if root.error != "": SelectableText { text: root.error; text-color: #a13b33; font-size: 12px; }
+        if root.topics.length == 0 && root.error == "": SelectableText {
+            text: root.busy ? "正在读取主题…" : "还没有主题。可以让 Agent 将一组记忆整理成主题入口。";
+            text-color: Theme.secondary; font-size: 12px;
+        }
+        for row in root.topics: KnowledgeLink { item: row; activated => { root.open(row.id); } }
+        if root.more: ActionButton { label: "更多主题"; subtle: true; disabled: root.busy; activated => { root.next(); } }
+    }
+}
+
+export component MemoryReader inherits Rectangle {
+    in property <bool> busy;
+    in property <bool> can-back;
+    in property <string> title;
+    in property <string> body;
+    in property <string> note;
+    in property <string> error;
+    in property <[KnowledgeRow]> outgoing;
+    in property <[KnowledgeRow]> incoming;
+    in property <bool> outgoing-more;
+    in property <bool> incoming-more;
+    callback open(string);
+    callback close;
+    callback back;
+    callback more(bool);
+    callback focus-close;
+    focus-close => { close-button.focus(); }
+    changed title => { scroll.content-y = 0px; }
+    background: #25254266;
+    TouchArea { clicked => { root.close(); } }
+    keyboard := FocusScope {
+        width: root.width; height: root.height; focus-on-tab-navigation: false; focus-on-click: false;
+        capture-key-pressed(event) => { if event.text == Key.Escape { root.close(); accept } else { reject } }
+        FocusScope { width: 0px; height: 0px; focus-on-click: false; focus-gained(reason) => { close-button.focus(); } }
+    panel := Rectangle {
+        width: min(920px, root.width - 24px); height: max(100px, root.height - 48px);
+        x: (root.width - self.width) / 2; y: 24px;
+        border-radius: 14px; background: Theme.paper;
+        TouchArea { clicked => {} }
+        VerticalLayout {
+            padding: parent.width < 500px ? 16px : 24px; spacing: 16px;
+            HorizontalLayout {
+                height: 36px; spacing: 8px; cross-axis-alignment: center;
+                if root.can-back: ActionButton { label: "返回"; subtle: true; height: 32px; min-width: 56px; activated => { root.back(); } }
+                Text { text: "记忆阅读"; color: Theme.secondary; font-size: 12px; }
+                Rectangle { horizontal-stretch: 1; }
+                close-button := ActionButton { label: "关闭"; subtle: true; min-width: 64px; height: 36px; activated => { root.close(); } }
+            }
+            scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off; content-width: self.visible-width; vertical-stretch: 1;
+                VerticalLayout {
+                    x: 0px; y: 0px; width: scroll.visible-width; height: self.preferred-height;
+                    padding-right: 8px; padding-bottom: 20px; spacing: 16px; alignment: start;
+                    SelectableText { text: root.title; text-color: Theme.ink; font-size: 20px; font-weight: 600; }
+                    SelectableText { text: root.note; text-color: Theme.secondary; font-size: 12px; }
+                    if root.error != "": SelectableText { text: root.error; text-color: #a13b33; font-size: 12px; }
+                    SelectableText { text: root.body; text-color: Theme.ink; font-size: 14px; }
+                    if root.busy: Text { text: "正在读取…"; color: Theme.muted; font-size: 12px; }
+                    Rectangle { height: 1px; background: Theme.border; }
+                    Text { text: "引用与依据"; color: Theme.ink; font-size: 14px; font-weight: 600; }
+                    if !root.busy && root.outgoing.length == 0: Text { text: "暂无结构化引用"; color: Theme.muted; font-size: 12px; }
+                    for row in root.outgoing: KnowledgeLink { item: row; activated => { root.open(row.id); } }
+                    if root.outgoing-more: ActionButton { label: "更多引用"; subtle: true; disabled: root.busy; activated => { root.more(false); } }
+                    Rectangle { height: 1px; background: Theme.border; }
+                    Text { text: "被引用"; color: Theme.ink; font-size: 14px; font-weight: 600; }
+                    if !root.busy && root.incoming.length == 0: Text { text: "暂无其他记忆引用"; color: Theme.muted; font-size: 12px; }
+                    for row in root.incoming: KnowledgeLink { item: row; activated => { root.open(row.id); } }
+                    if root.incoming-more: ActionButton { label: "更多反向引用"; subtle: true; disabled: root.busy; activated => { root.more(true); } }
+                }
+            }
+        }
+    }
+        FocusScope { width: 0px; height: 0px; focus-on-click: false; focus-gained(reason) => { close-button.focus(); } }
+    }
+}

@@ -47,6 +47,10 @@ pub struct Remember {
     pub scope: Scope,
     #[serde(default)]
     pub source_refs: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "crate::knowledge::MemoryType::is_note")]
+    pub memory_type: crate::knowledge::MemoryType,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<crate::knowledge::Link>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -61,6 +65,11 @@ pub struct Correct {
     pub scope: Option<Scope>,
     #[schemars(with = "Option<Vec<Uuid>>")]
     pub source_refs: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_type: Option<crate::knowledge::MemoryType>,
+    /// 省略保留原关系，空数组清空；派生依据不会自动升级到未核对的修订。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<Vec<crate::knowledge::Link>>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

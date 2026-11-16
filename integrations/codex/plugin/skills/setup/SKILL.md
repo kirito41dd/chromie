@@ -5,7 +5,7 @@ description: 用户希望连接 Chromie、启用 Codex 消息采集、更新接�
 
 # Chromie 初始化与诊断
 
-本 skill 只处理接入与诊断。日常记忆与 Secret 规则来自 Chromie MCP instructions 和按主题返回的 get_setup_guide，不重复注入教程。
+本 skill 只处理接入与诊断。日常记忆与 Secret 工作流使用同包 chromie-memory，实时能力和权限以 Chromie MCP 及按主题返回的 get_setup_guide 为准。
 
 ## 统一 CLI 接入
 

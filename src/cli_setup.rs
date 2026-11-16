@@ -99,7 +99,7 @@ fn invoke_codex(codex_dir: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// 插件只带固定 hook 与采集程序，不携带 MCP／hook 密钥，不修改信任记录。
+/// 插件带固定 hook、采集程序与按需加载的使用 Skill，不携带密钥，不修改信任记录。
 pub fn install_hook(config: &Path, codex_dir: &Path, data_dir: &Path) -> Result<Value> {
     #[cfg(not(unix))]
     return Err(Error::invalid(
@@ -121,12 +121,21 @@ pub fn install_hook(config: &Path, codex_dir: &Path, data_dir: &Path) -> Result<
             plugin.join("hooks"),
             plugin.join("bin"),
             plugin.join("scripts"),
+            plugin.join("skills/memory/references"),
+            plugin.join("skills/setup"),
         ] {
             codex_setup::directory(&dir, true)?;
         }
         let marketplace = json!({"name":"chromie-cli","interface":{"displayName":"Chromie CLI"},"plugins":[{
             "name":"chromie","source":{"source":"local","path":"./plugin"},"policy":{"installation":"AVAILABLE","authentication":"ON_USE"},"category":"Productivity"}]});
-        let manifest = json!({"name":"chromie","version":env!("CARGO_PKG_VERSION"),"description":"Chromie CLI 安装的消息采集 hook","hooks":"./hooks/hooks.json"});
+        let manifest = json!({"name":"chromie","version":env!("CARGO_PKG_VERSION"),"description":"Chromie 跨对话记忆、Secret 工作流与消息采集","hooks":"./hooks/hooks.json","skills":"./skills/"});
+        for (relative, content) in crate::client_skills::FILES {
+            codex_setup::replace(&plugin.join("skills/memory").join(relative), content)?;
+        }
+        codex_setup::replace(
+            &plugin.join("skills/setup/SKILL.md"),
+            include_bytes!("../integrations/codex/plugin/skills/setup/SKILL.md"),
+        )?;
         for (path, value) in [
             (root.join(".agents/plugins/marketplace.json"), marketplace),
             (plugin.join(".codex-plugin/plugin.json"), manifest),

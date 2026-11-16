@@ -11,23 +11,22 @@ use sea_orm::{
 use std::time::{Duration, Instant};
 
 impl Store {
-    pub(super) async fn embed_model(
-        &self,
-        connection: &Connection,
-        text: &str,
-        timeout: Duration,
-    ) -> Result<Vec<f32>> {
-        self.embed_model_batch(connection, &[text], timeout)
-            .await?
-            .pop()
-            .ok_or_else(Error::unavailable)
-    }
-
     pub(super) async fn embed_model_batch(
         &self,
         connection: &Connection,
         texts: &[&str],
         timeout: Duration,
+    ) -> Result<Vec<Vec<f32>>> {
+        self.embed_model_batch_guarded(connection, texts, timeout, None)
+            .await
+    }
+
+    pub(super) async fn embed_model_batch_guarded(
+        &self,
+        connection: &Connection,
+        texts: &[&str],
+        timeout: Duration,
+        admission: Option<&super::knowledge_worker::KnowledgeAdmission<'_>>,
     ) -> Result<Vec<Vec<f32>>> {
         let deadline = tokio::time::Instant::now() + timeout;
         let limit = self.model_limit(&connection.profile.model).await?;
@@ -41,6 +40,9 @@ impl Store {
             message: "模型并发已满，等待超时，请稍后重试",
             status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
         })?;
+        if let Some(admission) = admission {
+            self.validate_knowledge_admission(admission).await?;
+        }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return Err(Error {
@@ -85,7 +87,7 @@ impl Store {
         )
     }
 
-    async fn record_model_usage(&self, model: &str, usage: &CallUsage) -> Result<()> {
+    pub(super) async fn record_model_usage(&self, model: &str, usage: &CallUsage) -> Result<()> {
         let tokens = usage.tokens.unwrap_or(0);
         let failed = u64::from(usage.failed);
         let unknown = u64::from(usage.tokens.is_none());

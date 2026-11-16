@@ -97,6 +97,7 @@ fn render(ui: &Dashboard, value: &Settings, fill: bool) {
         value
             .pending
             .as_ref()
+            .filter(|_| value.enabled)
             .map(|g| {
                 format!(
                     "正在准备 · {} · {} 维 · {}",
@@ -115,9 +116,10 @@ fn render(ui: &Dashboard, value: &Settings, fill: bool) {
     if let Some(target) = value.target() {
         ui.set_model_progress(target.progress.label().into());
         ui.set_model_ratio(target.progress.ratio());
-        ui.set_model_has_key(target.has_api_key);
+
         if fill {
-            ui.set_model_url(target.base_url.clone().into());
+            crate::provider_browser::select_embedding(target.provider_id.as_deref());
+
             ui.set_model_name(target.profile.model.clone().into());
             ui.set_model_version(target.profile.model_version.clone().into());
             ui.set_model_dimensions(target.profile.dimensions.to_string().into());
@@ -140,12 +142,8 @@ fn render(ui: &Dashboard, value: &Settings, fill: bool) {
     } else {
         ui.set_model_progress("".into());
         ui.set_model_ratio(0.0);
-        ui.set_model_has_key(false);
     }
-    if fill {
-        ui.set_model_key("".into());
-        ui.set_model_clear_key(false);
-    }
+    if fill {}
 }
 
 fn ask_confirmation(
@@ -165,6 +163,10 @@ fn ask_confirmation(
 
 fn submit(operation: &str) {
     let Some((ui, _session, state)) = active() else {
+        return;
+    };
+    let Some(provider_id) = crate::provider_browser::selected_embedding() else {
+        ui.set_model_error("请先保存并选择一个服务商。".into());
         return;
     };
     let dimensions = match ui.get_model_dimensions().parse::<u32>() {
@@ -203,7 +205,7 @@ fn submit(operation: &str) {
     let needs_confirmation = operation == "save"
         && (changed
             || (!state.borrow().settings.enabled && state.borrow().settings.target().is_some()));
-    let payload=json!({"expected_revision":state.borrow().edit_revision,"base_url":ui.get_model_url().as_str(),"model":ui.get_model_name().as_str(),"model_version":ui.get_model_version().as_str(),"dimensions":dimensions,"max_concurrency":max_concurrency,"batch_size":batch_size,"similarity_threshold":similarity_threshold,"api_key":if ui.get_model_key().is_empty(){None}else{Some(ui.get_model_key().to_string())},"clear_api_key":ui.get_model_clear_key(),"confirm_rebuild":needs_confirmation,"force_rebuild":false}).to_string();
+    let payload=json!({"expected_revision":state.borrow().edit_revision,"provider_id":provider_id,"model":ui.get_model_name().as_str(),"model_version":ui.get_model_version().as_str(),"dimensions":dimensions,"max_concurrency":max_concurrency,"batch_size":batch_size,"similarity_threshold":similarity_threshold,"confirm_rebuild":needs_confirmation,"force_rebuild":false}).to_string();
     if needs_confirmation {
         let count = state
             .borrow()
@@ -220,10 +222,6 @@ fn submit(operation: &str) {
             Confirmation::Save(payload),
         );
         return;
-    }
-    // 测试后仍可直接保存刚输入的 Key；只保留当前表单内存，不写浏览器存储。
-    if operation == "save" {
-        ui.set_model_key("".into());
     }
     ui.set_model_error("".into());
     ui.set_model_notice("".into());
@@ -247,7 +245,6 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
             ui.set_model_notice("".into());
             match intent {
                 Some(Confirmation::Save(payload)) => {
-                    ui.set_model_key("".into());
                     send("save", payload, true);
                 }
                 Some(Confirmation::Disable(revision)) => send(
@@ -260,6 +257,13 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
         }
     });
     ui.on_model_test(|| submit("test"));
+    ui.on_model_reload(|| {
+        if let Some((ui, _, state)) = active() {
+            state.borrow_mut().dirty = false;
+            ui.set_model_error("".into());
+            send("reload", "{}".into(), true);
+        }
+    });
     ui.on_model_edited(|| {
         if let Some((ui, _, state)) = active() {
             state.borrow_mut().dirty = true;
@@ -278,7 +282,7 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
         if let Some((ui, _, state)) = active() {
             let settings = state.borrow().settings.clone();
             if let Some(target) = settings.target() {
-                let payload = json!({"expected_revision":settings.revision,"base_url":target.base_url,"model":target.profile.model,"model_version":target.profile.model_version,"dimensions":target.profile.dimensions,"max_concurrency":target.max_concurrency,"api_key":null,"clear_api_key":false,"confirm_rebuild":true,"force_rebuild":true}).to_string();
+                let payload = json!({"expected_revision":settings.revision,"provider_id":target.provider_id,"model":target.profile.model,"model_version":target.profile.model_version,"dimensions":target.profile.dimensions,"max_concurrency":target.max_concurrency,"api_key":null,"clear_api_key":false,"confirm_rebuild":true,"force_rebuild":true}).to_string();
                 ask_confirmation(&ui, &state, "重建全部语义索引？", "确认重建", rebuild_description(target.progress.total), Confirmation::Save(payload));
             }
         }
@@ -318,7 +322,7 @@ pub(crate) fn clear() {
             generation,
             ..Default::default()
         };
-        ui.set_model_key("".into());
+
         ui.set_model_busy(false);
         ui.set_model_testing(false);
         ui.set_model_loaded(false);
@@ -375,19 +379,33 @@ pub fn receive_model(generation: u32, status: u16, body: String) {
         ui.set_model_error("模型配置响应无效，请刷新重试。".into());
         return;
     };
-    // 发出读取之后用户仍可编辑，迟到的轮询响应只能更新进度。
-    let fill = fill && (operation != "read" || !state.borrow().dirty);
+    // Provider更新只允许在用途基线未变时续用草稿；其他修改须显式解决，不能静默覆盖。
+    let dirty = state.borrow().dirty;
+    let preserve = operation == "read" && dirty;
+    let same = crate::model_settings::same_edit_base(&state.borrow().settings, &value);
+    let fill = fill && (operation != "read" || !dirty);
     render(&ui, &value, fill);
+    if preserve && !same {
+        ui.set_model_error("用途配置已在其他位置变更，草稿已保留；重新载入会放弃当前草稿。".into());
+        return;
+    }
     let mut state = state.borrow_mut();
-    if fill {
+    if fill || preserve {
         state.edit_revision = value.revision;
+    }
+    if fill {
         state.dirty = false;
+    }
+    if preserve {
+        ui.set_model_notice("已同步连接版本，模型草稿已保留。".into());
     }
     state.settings = value;
     if operation != "read" {
         ui.set_model_confirm("".into());
         ui.set_model_notice(
-            if operation == "disable" {
+            if operation == "reload" {
+                "已载入最新配置。"
+            } else if operation == "disable" {
                 "已停用语义检索，关键词检索继续可用。"
             } else {
                 "配置已保存，后台会按当前设置处理记忆。"

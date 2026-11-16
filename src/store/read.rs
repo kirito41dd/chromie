@@ -119,8 +119,28 @@ impl Store {
         let mut value = json!({"kind":"memory","memory_id":id,"revision":head.current_revision,"is_current":is_current,"content":revision.content,"processing_state":processing,
             "project_key":revision.project_key,"updated_at":timestamp(revision.created_at)?,"source_refs":refs,
             "evidence_status":if refs.is_empty(){"unverified"}else{"source_linked"}});
-        value["origin"] = Self::memory_origin(db, space, id, revision.agent_id.as_deref()).await?;
-        value["created_by"] = Self::memory_origin(db, space, id, head.agent_id.as_deref()).await?;
+        value["origin"] = Self::memory_origin(
+            db,
+            space,
+            id,
+            revision.agent_id.as_deref(),
+            revision.change_reason.as_deref(),
+        )
+        .await?;
+        value["memory_type"] = json!(crate::knowledge::MemoryType::parse(&revision.memory_type)?);
+        let first =
+            memory_revisions::Entity::find_by_id((space.bytes(), id.as_bytes().to_vec(), 1))
+                .one(db)
+                .await?
+                .ok_or_else(Error::missing)?;
+        value["created_by"] = Self::memory_origin(
+            db,
+            space,
+            id,
+            head.agent_id.as_deref(),
+            first.change_reason.as_deref(),
+        )
+        .await?;
         Self::decorate_secret(db, space, id, &mut value).await?;
         Ok(value)
     }
@@ -190,6 +210,7 @@ impl Store {
                     None => (head.current_revision, 0),
                 };
                 let mut card = Self::card(&self.db, space, id, Some(version)).await?;
+                card["knowledge"] = Self::knowledge_state(&self.db, space, id, version).await?;
                 if card.get("kind").and_then(Value::as_str) == Some("secret_ref")
                     && card.get("is_current").and_then(Value::as_bool) == Some(true)
                 {
@@ -251,7 +272,7 @@ impl Store {
                 let mut history = Vec::new();
                 for row in rows {
                     history.push(json!({"revision":row.revision,"content":row.content,"content_cursor":format!("{}:0",row.revision),"project_key":row.project_key,"change_reason":row.change_reason,
-                        "origin":Self::memory_origin(&self.db, space, id, row.agent_id.as_deref()).await?}));
+                        "origin":Self::memory_origin(&self.db, space, id, row.agent_id.as_deref(), row.change_reason.as_deref()).await?}));
                 }
                 json!({"memory_id":id,"history":history,"next_cursor":next,"truncated":more})
             }

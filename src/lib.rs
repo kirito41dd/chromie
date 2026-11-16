@@ -19,6 +19,8 @@ pub mod cli_setup;
 #[cfg(feature = "client")]
 mod client_config;
 #[cfg(feature = "client")]
+pub mod client_skills;
+#[cfg(feature = "client")]
 pub mod codex_check;
 #[cfg(feature = "client")]
 pub mod codex_setup;
@@ -36,7 +38,12 @@ pub mod embedding_batch;
 pub mod entity;
 pub mod error;
 #[cfg(feature = "server")]
+pub mod extraction;
+#[cfg(feature = "server")]
 pub mod http;
+pub mod knowledge;
+#[cfg(feature = "server")]
+mod knowledge_http;
 #[cfg(feature = "server")]
 pub mod mcp;
 #[cfg(feature = "server")]
@@ -44,7 +51,11 @@ pub mod messages;
 #[cfg(feature = "server")]
 mod model_runtime;
 #[cfg(feature = "server")]
+pub mod organization;
+#[cfg(feature = "server")]
 mod pairing;
+#[cfg(feature = "server")]
+pub mod provider;
 #[cfg(feature = "server")]
 pub mod recall_usage;
 #[cfg(feature = "server")]
@@ -75,6 +86,8 @@ pub mod space_key;
 pub mod store;
 #[cfg(feature = "server")]
 mod system_http;
+#[cfg(feature = "server")]
+pub mod text_model;
 mod transport;
 pub mod types;
 #[cfg(feature = "server")]

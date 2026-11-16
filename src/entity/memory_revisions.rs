@@ -19,6 +19,7 @@ pub struct Model {
     pub created_at: TimeDateTime,
     #[sea_orm(column_type = "Binary(16)", nullable)]
     pub agent_id: Option<Vec<u8>>,
+    pub memory_type: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -41,6 +42,8 @@ pub enum Relation {
     Memories,
     #[sea_orm(has_many = "super::memory_sources::Entity")]
     MemorySources,
+    #[sea_orm(has_many = "super::recall_items::Entity")]
+    RecallItems,
 }
 
 impl Related<super::agent_connections::Entity> for Entity {
@@ -58,6 +61,12 @@ impl Related<super::memories::Entity> for Entity {
 impl Related<super::memory_sources::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::MemorySources.def()
+    }
+}
+
+impl Related<super::recall_items::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::RecallItems.def()
     }
 }
 

@@ -2,7 +2,9 @@
 
 pub mod agent_connections;
 pub mod agent_credentials;
+pub mod knowledge_jobs;
 pub mod memories;
+pub mod memory_links;
 pub mod memory_revisions;
 pub mod memory_sources;
 pub mod outbox_tasks;
@@ -12,6 +14,7 @@ pub mod secret_access_audit;
 pub mod secrets;
 pub mod source_events;
 pub mod spaces;
+pub mod text_model_settings;
 pub mod write_receipts;
 
 pub mod instance_model_settings;
@@ -26,3 +29,13 @@ pub mod model_limits;
 
 pub mod memory_imports;
 pub mod transfer_receipts;
+
+pub mod model_providers;
+
+pub mod organization_items;
+
+pub mod organization_settings;
+
+pub mod conversation_metadata;
+pub mod conversation_titles;
+pub mod extraction_items;

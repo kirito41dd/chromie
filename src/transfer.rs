@@ -11,7 +11,7 @@ use p256::elliptic_curve::zeroize::Zeroizing;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet, VecDeque},
     io::{Read, Write},
     sync::{Arc, LazyLock},
     time::Duration,
@@ -91,6 +91,10 @@ pub struct Record {
     pub content: String,
     pub project_key: Option<String>,
     pub secret: Option<Secret>,
+    #[serde(default, skip_serializing_if = "crate::knowledge::MemoryType::is_note")]
+    pub memory_type: crate::knowledge::MemoryType,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<crate::knowledge::Link>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,7 +105,7 @@ pub struct Secret {
 impl Bundle {
     pub fn validate(&self) -> Result<()> {
         if self.format != "chromie-soul"
-            || self.version != 1
+            || !matches!(self.version, 1 | 2)
             || self.package_id.is_nil()
             || self.records.len() > MAX_RECORDS
             || SpaceKey::parse(&self.source_space).is_none()
@@ -124,8 +128,72 @@ impl Bundle {
                 bounded(project, 128)?;
             }
             if let Some(secret) = &row.secret {
+                if row.memory_type != crate::knowledge::MemoryType::Note || !row.links.is_empty() {
+                    return Err(invalid_package());
+                }
                 secret.contract.validate_payload(&secret.value.0)?;
             }
+            if row.links.len() > 32
+                || (self.version == 1 && (!row.links.is_empty() || !row.memory_type.is_note()))
+            {
+                return Err(invalid_package());
+            }
+            let mut links = HashSet::new();
+            for link in &row.links {
+                link.validate()?;
+                if link.memory_id == row.memory_id || !links.insert((link.memory_id, link.relation))
+                {
+                    return Err(invalid_package());
+                }
+            }
+        }
+        // 预览前拒绝派生环及 Secret 依据，不能等到确认时才发现无法导入。
+        let secret_ids: HashSet<_> = self
+            .records
+            .iter()
+            .filter(|row| row.secret.is_some())
+            .map(|row| row.memory_id)
+            .collect();
+        let mut degrees: HashMap<_, usize> = ids.iter().map(|id| (*id, 0)).collect();
+        let mut dependents: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        for row in &self.records {
+            for link in row
+                .links
+                .iter()
+                .filter(|link| link.relation == crate::knowledge::Relation::DerivedFrom)
+            {
+                if secret_ids.contains(&link.memory_id) {
+                    return Err(invalid_package());
+                }
+                if ids.contains(&link.memory_id) {
+                    *degrees
+                        .get_mut(&row.memory_id)
+                        .ok_or_else(invalid_package)? += 1;
+                    dependents
+                        .entry(link.memory_id)
+                        .or_default()
+                        .push(row.memory_id);
+                }
+            }
+        }
+        let mut queue: VecDeque<_> = degrees
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut visited = 0;
+        while let Some(id) = queue.pop_front() {
+            visited += 1;
+            for dependent in dependents.get(&id).into_iter().flatten() {
+                let degree = degrees.get_mut(dependent).ok_or_else(invalid_package)?;
+                *degree -= 1;
+                if *degree == 0 {
+                    queue.push_back(*dependent);
+                }
+            }
+        }
+        if visited != self.records.len() {
+            return Err(invalid_package());
         }
         Ok(())
     }
@@ -277,6 +345,8 @@ mod tests {
             source_name: "虚构灵魂".into(),
             exported_at: "2026-11-04T00:00:00Z".into(),
             records: vec![Record {
+                memory_type: Default::default(),
+                links: vec![],
                 memory_id: Uuid::now_v7(),
                 source_revision: 2,
                 content: "虚构凭据".into(),

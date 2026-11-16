@@ -98,6 +98,8 @@ async fn login_cookie_is_persistent_space_scoped_and_revoked_by_password_change(
         .remember(
             work_space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: content.clone(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
@@ -440,6 +442,8 @@ async fn web_recall_reuses_domain_search_and_enforces_space_and_cookie_boundarie
         .remember(
             space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: "webrecall alpha 当前空间的虚构记忆".into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
@@ -453,6 +457,8 @@ async fn web_recall_reuses_domain_search_and_enforces_space_and_cookie_boundarie
         .remember(
             other,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: "webrecall 另一个空间的虚构记忆".into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
@@ -651,6 +657,8 @@ async fn web_recall_reuses_domain_search_and_enforces_space_and_cookie_boundarie
         .correct(
             space,
             Correct {
+                memory_type: Default::default(),
+                links: None,
                 memory_id: id,
                 expected_revision: 1,
                 request_id: Uuid::now_v7(),
@@ -758,6 +766,8 @@ async fn web_recall_reuses_domain_search_and_enforces_space_and_cookie_boundarie
             .remember(
                 space,
                 Remember {
+                    memory_type: Default::default(),
+                    links: Vec::new(),
                     content: format!(
                         "debugbudget {index} {}",
                         "仅用于预算测试的虚构长正文".repeat(120)

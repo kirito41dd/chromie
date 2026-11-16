@@ -46,6 +46,8 @@ pub struct SessionRow {
     #[serde(flatten)]
     pub conversation: Conversation,
     pub origin: Value,
+    pub title: String,
+    pub extraction: Value,
     pub preview: String,
     pub message_count: i64,
     pub received_at: String,
@@ -69,6 +71,7 @@ pub struct Page<T> {
     pub page: u64,
     pub has_more: bool,
     pub as_of: String,
+    pub conversation_info: Option<Value>,
 }
 
 fn boundary(page: u64, as_of: Option<&str>) -> Result<PrimitiveDateTime> {
@@ -151,7 +154,27 @@ impl Store {
                 .one(&tx)
                 .await?
                 .ok_or_else(Error::missing)?;
+            let info = Self::conversation_info(&tx, space, &key).await?;
+            let fallback = in_conversation(visible(space, at), &key)
+                .filter(events::Column::Role.eq("user"))
+                .order_by_asc(events::Column::OccurredAt)
+                .order_by_asc(events::Column::Id)
+                .one(&tx)
+                .await?;
+            let title = info["title"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    fallback
+                        .and_then(|r| r.body)
+                        .unwrap_or_else(|| "未命名会话".into())
+                        .chars()
+                        .take(48)
+                        .collect()
+                });
             items.push(SessionRow {
+                title,
+                extraction: info["extraction"].clone(),
                 origin: Self::source_label(&tx, space, agent.as_deref()).await?,
                 conversation: key,
                 preview: latest.body.unwrap_or_default().chars().take(120).collect(),
@@ -165,6 +188,7 @@ impl Store {
             page: input.page,
             has_more,
             as_of: timestamp(at)?,
+            conversation_info: None,
         })
     }
 
@@ -210,6 +234,7 @@ impl Store {
             page: input.page,
             has_more,
             as_of: timestamp(at)?,
+            conversation_info: Some(Self::conversation_info(&self.db, space, &conversation).await?),
         })
     }
 
@@ -248,4 +273,33 @@ pub(crate) async fn detail(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
     Ok(Json(store.captured_message(space, id).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleInput {
+    pub agent_id: Option<Uuid>,
+    pub session_id: String,
+    pub expected_revision: i64,
+    pub title: Option<String>,
+}
+pub(crate) async fn title(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+    payload: std::result::Result<Json<TitleInput>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Value>> {
+    let Json(input) = payload.map_err(|_| Error::invalid("会话标题参数无效"))?;
+    Ok(Json(
+        store
+            .set_conversation_title(
+                space,
+                Conversation {
+                    agent_id: input.agent_id,
+                    session_id: input.session_id,
+                },
+                input.expected_revision,
+                input.title,
+            )
+            .await?,
+    ))
 }

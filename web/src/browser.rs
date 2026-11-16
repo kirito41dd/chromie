@@ -67,6 +67,8 @@ struct Snapshot {
 #[derive(Deserialize)]
 struct RecentMemory {
     #[serde(default)]
+    memory_type: String,
+    #[serde(default)]
     usage: Option<crate::memory::Usage>,
     #[serde(default)]
     origin: crate::memory::Origin,
@@ -163,6 +165,10 @@ pub fn start(
     ui.set_transfer_page(transfer_page);
     let session = Rc::new(RefCell::new(Session::default()));
     crate::selection::install(&ui);
+    crate::knowledge_browser::install(&ui, session.clone());
+    crate::provider_browser::install(&ui, session.clone());
+    crate::text_browser::install(&ui, session.clone());
+    crate::extraction_browser::install(&ui, session.clone());
     crate::model_browser::install(&ui, session.clone());
     crate::transfer_browser::install(&ui, session.clone());
     crate::access_browser::install(&ui, session.clone());
@@ -375,7 +381,10 @@ fn set_pages(
         return;
     }
     crate::secret_browser::close();
+    crate::provider_browser::clear();
     crate::model_browser::clear();
+    crate::knowledge_browser::clear();
+    crate::text_browser::clear();
     crate::transfer_browser::clear();
     crate::recall_browser::clear();
     crate::access_browser::clear();
@@ -395,7 +404,11 @@ fn set_pages(
         crate::messages_browser::load();
     }
     if settings_page && ui.get_unlocked() {
+        crate::provider_browser::load();
         crate::model_browser::load();
+    }
+    if ui.get_unlocked() {
+        crate::text_browser::load(false);
     }
     if transfer_page && ui.get_unlocked() {
         crate::transfer_browser::load();
@@ -448,7 +461,10 @@ pub fn resize_viewport(width: f32) {
 
 #[wasm_bindgen]
 pub fn end_session() {
+    crate::provider_browser::clear();
     crate::model_browser::clear();
+    crate::knowledge_browser::clear();
+    crate::text_browser::clear();
     crate::transfer_browser::clear();
     crate::secret_browser::close();
     crate::recall_browser::clear();
@@ -576,6 +592,7 @@ pub fn receive_snapshot(generation: u32, status: u16, body: String, storage_fail
             crate::access_browser::load();
         }
         if ui.get_settings_page() {
+            crate::provider_browser::load();
             crate::model_browser::load();
         }
         if ui.get_transfer_page() {
@@ -593,6 +610,8 @@ pub fn receive_snapshot(generation: u32, status: u16, body: String, storage_fail
         .into(),
     );
     ui.set_space_name(snapshot.space_name.into());
+    crate::knowledge_browser::load(false);
+    crate::text_browser::load(false);
     ui.set_memory_count(snapshot.memory_count.to_string().into());
     ui.set_secret_summary(crate::memory::secret_summary(snapshot.secret_count).into());
     ui.set_event_count(snapshot.event_count.to_string().into());
@@ -675,11 +694,19 @@ pub fn receive_snapshot(generation: u32, status: u16, body: String, storage_fail
                 secret_status: memory.secret.status().into(),
                 content: content.into(),
                 preview: preview.into(),
-                scope: memory
-                    .project_key
-                    .map(|project| format!("项目 · {project}"))
-                    .unwrap_or_else(|| "空间通用".into())
-                    .into(),
+                scope: format!(
+                    "{}{}",
+                    if memory.memory_type == "topic" {
+                        "主题 · "
+                    } else {
+                        ""
+                    },
+                    memory
+                        .project_key
+                        .map(|project| format!("项目 · {project}"))
+                        .unwrap_or_else(|| "空间通用".into())
+                )
+                .into(),
                 time: date(&memory.updated_at).into(),
                 detail: format!(
                     "{}  ·  修订 {}  ·  {}",

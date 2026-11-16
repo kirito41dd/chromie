@@ -64,6 +64,8 @@ async fn put(store: &Store, space: SpaceId, text: &str, scope: Scope) -> Uuid {
             .remember(
                 space,
                 Remember {
+                    memory_type: Default::default(),
+                    links: Vec::new(),
                     content: text.into(),
                     scope,
                     source_refs: vec![],
@@ -190,6 +192,18 @@ async fn per_generation_threshold_filters_both_lanes_without_losing_fresh_or_lit
         Scope::Global,
     )
     .await;
+    let covered_text = "stored-low: 云杉集群运维指南；数据库连接只用于巡检。";
+    let covered = put(&store, owner, covered_text, Scope::Global).await;
+    let covered_foreign = put(&store, other, covered_text, Scope::Global).await;
+    let covered_project = put(
+        &store,
+        owner,
+        covered_text,
+        Scope::Project {
+            project_key: "other-project".into(),
+        },
+    )
+    .await;
     // 三十五个更近的向量让低分 BM25 候选落在稠密 Top30 以外，必须额外按 ID 评分。
     for n in 0..35 {
         put(&store, owner, &format!("filler note {n}"), Scope::Global).await;
@@ -270,6 +284,92 @@ async fn per_generation_threshold_filters_both_lanes_without_losing_fresh_or_lit
             "短关键词 {term} 不能被语义门槛误删"
         );
     }
+    for term in ["数据库运维", "数据库 运维"] {
+        let result = store
+            .recall(
+                owner,
+                Recall {
+                    query: term.into(),
+                    project_key: Some("current-project".into()),
+                    max_chars: Some(8000),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(contains(&result, covered), "相关的组合主题不能被低余弦清空");
+        assert!(!contains(&result, covered_foreign));
+        assert!(!contains(&result, covered_project));
+    }
+    // Web 和 MCP 走同一个候选策略；低分命中应清楚标记为词面保护，不声称语义通过。
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", http_listener.local_addr().unwrap());
+    let app = chromie::http::router_with_sessions(
+        store.clone(),
+        Some(origin.clone()),
+        chromie::web_session::WebSessions::from_key(&support::root()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let http_task = tokio::spawn(async move { axum::serve(http_listener, app).await.unwrap() });
+    let client = reqwest::Client::new();
+    let login = client
+        .post(format!("{origin}/spaces/threshold-owner/login"))
+        .header("Origin", &origin)
+        .header("x-chromie-password", "fictional-policy-password")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 204);
+    let cookie = login.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let web: Value = client
+        .post(format!("{origin}/spaces/threshold-owner/recall"))
+        .header("Origin", &origin)
+        .header("Cookie", cookie)
+        .json(&json!({"query":"数据库运维","project_key":"current-project","max_chars":8000}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(contains(&web, covered));
+    assert_eq!(web["debug"]["embedding"]["filter"]["full_coverage_kept"], 1);
+    let hit = web["debug"]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["memory_id"] == covered.to_string())
+        .unwrap();
+    assert!(hit["semantic_score"].as_f64().unwrap() < 0.8);
+    assert_eq!(hit["keyword_match"]["kind"], "full_coverage");
+    let (_, mcp_key, _) = support::grant(&store, owner, false).await;
+    let mcp: Value = client
+        .post(format!("{origin}/spaces/threshold-owner/mcp"))
+        .bearer_auth(mcp_key)
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2025-06-18")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall","arguments":{"query":"数据库运维","project_key":"current-project","max_chars":8000}}}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        web["memories"],
+        mcp["result"]["structuredContent"]["memories"]
+    );
+    http_task.abort();
     let scoped = store
         .recall(
             owner,
@@ -298,6 +398,8 @@ async fn per_generation_threshold_filters_both_lanes_without_losing_fresh_or_lit
         .correct(
             owner,
             Correct {
+                memory_type: Default::default(),
+                links: None,
                 memory_id: low,
                 expected_revision: 1,
                 request_id: Uuid::now_v7(),

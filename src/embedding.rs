@@ -4,6 +4,7 @@ use p256::elliptic_curve::zeroize::Zeroizing;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
+use uuid::Uuid;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +45,9 @@ impl Profile {
 #[serde(deny_unknown_fields)]
 pub struct Save {
     pub expected_revision: i64,
+    #[serde(default)]
+    pub provider_id: Option<Uuid>,
+    #[serde(default)]
     pub base_url: String,
     pub model: String,
     #[serde(default)]

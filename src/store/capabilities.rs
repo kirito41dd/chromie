@@ -117,12 +117,23 @@ impl Store {
                 retrieval.reason = Some(SemanticReason::InitialIndexBuilding);
             }
         }
+        let background_llm = crate::entity::text_model_settings::Entity::find_by_id(1u8)
+            .one(&tx)
+            .await?
+            .is_some_and(|row| row.enabled != 0);
         tx.commit().await?;
         Ok(Capabilities {
-            capability_version: 1,
+            capability_version: 2,
             space: slug,
             cache_ttl_seconds: 30,
             retrieval,
+            knowledge: crate::retrieval_capabilities::KnowledgeCapabilities {
+                references: true,
+                backlinks: true,
+                topic_navigation: true,
+                max_links_per_memory: 32,
+                background_llm,
+            },
         })
     }
 }

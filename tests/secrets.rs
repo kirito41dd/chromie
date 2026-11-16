@@ -243,6 +243,8 @@ async fn secret_http_and_mcp_keep_plaintext_outside_memory_and_handle_revision_f
         .remember(
             space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: "普通说明提到 Secret 和 secret://demo/example，不是凭据对象".into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,

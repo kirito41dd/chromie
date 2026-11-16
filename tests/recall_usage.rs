@@ -82,6 +82,8 @@ async fn memory(store: &Store, space: SpaceId, content: String) -> Uuid {
         .remember(
             space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content,
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
@@ -263,6 +265,8 @@ async fn feedback_is_owned_idempotent_atomic_revision_scoped_and_separate_from_w
         .correct(
             space,
             Correct {
+                memory_type: Default::default(),
+                links: None,
                 memory_id: a,
                 expected_revision: 1,
                 request_id: Uuid::now_v7(),
@@ -515,6 +519,8 @@ async fn popular_and_useful_orders_use_agent_activity_current_revision_and_thirt
         .correct(
             space,
             Correct {
+                memory_type: Default::default(),
+                links: None,
                 memory_id: b,
                 expected_revision: 1,
                 request_id: Uuid::now_v7(),

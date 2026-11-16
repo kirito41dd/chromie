@@ -41,6 +41,8 @@ struct CandidateFilter {
     filtered_keyword: usize,
     filtered_semantic: usize,
     literal_kept: usize,
+    #[serde(default)]
+    full_coverage_kept: usize,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +87,8 @@ struct Selection {
 #[derive(Deserialize)]
 struct Hit {
     #[serde(default)]
+    keyword_match: Option<KeywordEvidence>,
+    #[serde(default)]
     semantic_score: Option<f64>,
     #[serde(default)]
     fusion_score: Option<f64>,
@@ -95,6 +99,12 @@ struct Hit {
     bm25_score: Option<f64>,
     indexed_revision: Option<i32>,
     score_matches_revision: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct KeywordEvidence {
+    kind: String,
+    parts: Option<usize>,
 }
 
 fn path_label(path: &str) -> &str {
@@ -208,11 +218,12 @@ impl Diagnostics {
             && filter.threshold.is_finite()
         {
             selection_note.push_str(&format!(
-                "\n候选余弦下限 {} · 过滤关键词 {} / 语义 {} · 精确匹配保留 {}",
+                "\n候选余弦下限 {} · 过滤关键词 {} / 语义 {} · 精确匹配保留 {} · 完整覆盖保留 {}",
                 filter.threshold,
                 filter.filtered_keyword,
                 filter.filtered_semantic,
-                filter.literal_kept
+                filter.literal_kept,
+                filter.full_coverage_kept
             ));
         }
         vec![
@@ -311,6 +322,19 @@ impl Diagnostics {
         if let Some(value) = hit.fusion_score.filter(|v| v.is_finite()) {
             score.push_str(&format!("\nRRF 融合分数 {value:.6}。"));
         }
+        if hit.score_matches_revision == Some(true)
+            && let Some(evidence) = &hit.keyword_match
+        {
+            match evidence.kind.as_str() {
+                "literal" => score.push_str("\n依据完整词面命中保留。"),
+                "full_coverage" => {
+                    if let Some(parts) = evidence.parts.filter(|parts| (2..=128).contains(parts)) {
+                        score.push_str(&format!("\n依据 {parts} 段词面完整覆盖保留。"));
+                    }
+                }
+                _ => {}
+            }
+        }
         (path, score)
     }
 }
@@ -370,5 +394,21 @@ mod tests {
         assert_eq!(stages[0].value.as_str(), "19");
         assert_eq!(stages[2].value.as_str(), "0");
         assert!(stages[2].note.contains("0.56") && stages[2].note.contains("关键词 19 / 语义 29"));
+    }
+
+    #[test]
+    fn a_low_semantic_score_can_be_explained_by_current_keyword_evidence() {
+        let mut body = serde_json::json!({
+            "timing":{"total_ms":24.0,"index_call_ms":3.0,"qdrant_server_ms":2.0},
+            "qdrant":{"available":true,"field":"content","tokenizer":"multilingual","candidates":1,"candidate_limit":30,"validated":1,"discarded":0},
+            "fallback":{"mode":"pending_keyword","terms":[],"examined":0,"matches":0,"candidate_limit":500,"pending_snapshot_limited":false},
+            "selection":{"duplicates":0,"project_filtered":0,"missing_or_hidden":0,"before_limit":1,"returned":1,"result_limit":10,"max_chars":8000},
+            "hits":[{"memory_id":"test","path":"qdrant_bm25","bm25_score":1.0,"semantic_score":0.3,"indexed_revision":1,"score_matches_revision":true,"keyword_match":{"kind":"full_coverage","parts":2}}]
+        });
+        let diagnostic: Diagnostics = serde_json::from_value(body.clone()).unwrap();
+        assert!(diagnostic.hit_labels("test").1.contains("完整覆盖"));
+        body["hits"][0]["score_matches_revision"] = serde_json::json!(false);
+        let diagnostic: Diagnostics = serde_json::from_value(body).unwrap();
+        assert!(!diagnostic.hit_labels("test").1.contains("完整覆盖"));
     }
 }

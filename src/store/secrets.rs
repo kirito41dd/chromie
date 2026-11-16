@@ -22,12 +22,27 @@ impl Store {
             .filter(crate::entity::agent_credentials::Column::KeyId.ne(cipher.key_id()))
             .one(&self.db)
             .await?;
-        if mismatch.is_some() || credential_mismatch.is_some() {
+        let text_model_mismatch = crate::entity::text_model_settings::Entity::find()
+            .filter(crate::entity::text_model_settings::Column::KeyCipher.is_not_null())
+            .filter(crate::entity::text_model_settings::Column::KeyId.ne(cipher.key_id()))
+            .one(&self.db)
+            .await?;
+        let provider_mismatch = crate::entity::model_providers::Entity::find()
+            .filter(crate::entity::model_providers::Column::KeyCipher.is_not_null())
+            .filter(crate::entity::model_providers::Column::KeyId.ne(cipher.key_id()))
+            .one(&self.db)
+            .await?;
+        if provider_mismatch.is_some()
+            || mismatch.is_some()
+            || credential_mismatch.is_some()
+            || text_model_mismatch.is_some()
+        {
             return Err(Error::invalid(
                 "数据库密文与当前根私钥不匹配，已拒绝启动；请保留数据库并恢复原私钥，禁止重新初始化或覆盖",
             ));
         }
         self.secret_cipher = Some(cipher);
+        self.migrate_model_providers().await?;
         Ok(self)
     }
 
@@ -159,6 +174,7 @@ impl Store {
         .insert(&tx)
         .await?;
         memory_revisions::ActiveModel {
+            memory_type: Set("note".into()),
             space_id: Set(space.bytes()),
             memory_id: Set(id.as_bytes().to_vec()),
             revision: Set(1),
@@ -267,6 +283,7 @@ impl Store {
         active.updated_at = Set(now());
         active.update(&tx).await?;
         memory_revisions::ActiveModel {
+            memory_type: Set("note".into()),
             space_id: Set(space.bytes()),
             memory_id: Set(id.as_bytes().to_vec()),
             revision: Set(revision),

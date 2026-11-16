@@ -124,6 +124,8 @@ async fn put(store: &Store, space: SpaceId, text: &str) -> Uuid {
         .remember(
             space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: text.into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
@@ -149,6 +151,7 @@ async fn query(store: &Store, space: SpaceId, text: &str) -> Value {
 }
 fn save(current: &Value, url: &str, model: &str) -> Save {
     Save {
+        provider_id: None,
         similarity_threshold: None,
         batch_size: None,
         expected_revision: current["revision"].as_i64().unwrap(),
@@ -573,6 +576,8 @@ async fn optional_instance_embedding_handles_ownership_generations_races_recover
         store.correct(
             owner,
             Correct {
+                memory_type: Default::default(),
+                links: None,
                 memory_id: a,
                 expected_revision: 1,
                 request_id: Uuid::now_v7(),

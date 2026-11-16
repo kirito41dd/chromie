@@ -1,13 +1,13 @@
 {
   "name": "chromie",
   "version": "0.1.0",
-  "description": "连接个人 Chromie 记忆空间，初始化 MCP 与消息采集。",
+  "description": "连接个人 Chromie 记忆空间，提供记忆与 Secret 工作流、初始化 MCP 与消息采集。",
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Chromie",
     "shortDescription": "个人记忆空间与对话采集",
-    "longDescription": "通过本机私有配置连接自行部署的 Chromie，提供初始化、诊断及用户消息与最终回复采集。日常记忆规则由 MCP 提供。",
+    "longDescription": "通过本机私有配置连接自行部署的 Chromie，提供初始化、诊断及用户消息与最终回复采集；日常使用 Skill 按需指导记忆接续、引用组织和 CLI Secret 取用，实时能力与权限由 MCP 提供。",
     "developerName": "Chromie",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

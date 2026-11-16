@@ -8,6 +8,7 @@
 mod generated {
     slint::slint! {
         #[style = "fluent-light"]
+        export { ExtractionJob, ExtractionDecision } from "../ui/extraction.slint";
         export { ConversationRow, CapturedRow } from "../ui/messages.slint";
         export { TransferRow } from "../ui/transfer.slint";
         export { AgentRow } from "../ui/access.slint";
@@ -16,14 +17,26 @@ mod generated {
         export { Dashboard } from "../ui/dashboard.slint";
         export { UsageTotal, UsageDay } from "../ui/model-usage.slint";
         export { MemoryRow } from "../ui/common.slint";
+        export { KnowledgeRow } from "../ui/knowledge.slint";
         export { RecallRow, RecallStage, RecallOverview } from "../ui/recall-models.slint";
     }
 }
 
 pub use generated::{
-    AgentRow, CapturedRow, ConversationRow, CopyBridge, Dashboard, MemoryRow, PointerBridge,
-    RecallOverview, RecallRow, RecallStage, SecretLine, TransferRow, UsageDay, UsageTotal,
+    AgentRow, CapturedRow, ConversationRow, CopyBridge, Dashboard, ExtractionDecision,
+    ExtractionJob, KnowledgeRow, MemoryRow, PointerBridge, RecallOverview, RecallRow, RecallStage,
+    SecretLine, TransferRow, UsageDay, UsageTotal,
 };
+#[cfg(target_arch = "wasm32")]
+mod knowledge_browser;
+#[cfg(target_arch = "wasm32")]
+pub use knowledge_browser::receive_knowledge;
+#[cfg(target_arch = "wasm32")]
+mod extraction_browser;
+#[cfg(target_arch = "wasm32")]
+mod text_browser;
+#[cfg(target_arch = "wasm32")]
+pub use text_browser::receive_text_model;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod session;
@@ -114,3 +127,8 @@ mod transfer_view;
 mod transfer_access;
 #[cfg(target_arch = "wasm32")]
 pub use transfer_browser::{receive_transfer, receive_transfer_file};
+
+#[cfg(target_arch = "wasm32")]
+mod provider_browser;
+#[cfg(target_arch = "wasm32")]
+pub use provider_browser::receive_provider;

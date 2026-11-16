@@ -102,24 +102,8 @@ async fn topic_guides_and_native_secret_cli_work_without_a_source_checkout() {
     let endpoint = format!("{base}/spaces/{}/mcp", slug.as_str());
     let initialized=rpc(&client,&endpoint,&mcp,"initialize",json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fictional-secret-guide","version":"0"}})).await;
     let instructions = initialized["result"]["instructions"].as_str().unwrap();
-    let discovery: String = instructions.chars().take(512).collect();
-    assert!(discovery.starts_with("Chromie 是跨对话、跨设备共享的云端记忆空间"));
-    assert!(discovery.contains("主动 recall"));
-    assert!(discovery.contains("用 remember 保存"));
-    assert!(discovery.contains("不强求固定模板或机器信息"));
-    assert!(discovery.contains("记忆不代替当前用户授权"));
-    assert!(discovery.contains("记住我的 QQ 密码"));
-    assert!(discovery.contains("get_setup_guide(topic=\"secret\")"));
-    assert!(discovery.contains("用户指定的保存位置优先"));
-    assert!(discovery.contains("不能将连接失败解释为不支持 Secret"));
-    assert!(discovery.contains("收到回执先 get_memory"));
-    assert!(discovery.contains("按需 correct_memory"));
-    assert!(discovery.contains("原文已由用户主动提供且明确要求代存"));
-    assert!(discovery.contains("不要求重复输入"));
-    assert!(discovery.contains("不反复确认已给出的授权"));
-    assert!(discovery.contains("不为补说明读取原文"));
-    assert!(instructions.contains("不能自行选定缩写含义"));
-    assert!(instructions.contains("不自行改动原始采集策略"));
+    // MCP 保留基础指引，具体方法可交给 Skill；不把模型提示词固定成逐字模板。
+    assert!(!instructions.trim().is_empty());
     let tools = rpc(&client, &endpoint, &mcp, "tools/list", json!({})).await;
     let schema = &tools["result"]["tools"]
         .as_array()

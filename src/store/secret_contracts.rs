@@ -62,6 +62,7 @@ impl Store {
             active.updated_at = Set(now());
             active.update(&tx).await?;
             memory_revisions::ActiveModel {
+                memory_type: Set("note".into()),
                 space_id: Set(space.bytes()),
                 memory_id: Set(id.as_bytes().to_vec()),
                 revision: Set(revision),

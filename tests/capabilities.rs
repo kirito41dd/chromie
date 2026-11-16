@@ -60,7 +60,7 @@ async fn capabilities(client: &reqwest::Client, url: &str, key: &str) -> Value {
     .await;
     assert_ne!(response["result"]["isError"], true);
     let value = response["result"]["structuredContent"].clone();
-    assert_eq!(value["capability_version"], 1);
+    assert_eq!(value["capability_version"], 2);
     assert!(
         value["cache_ttl_seconds"]
             .as_u64()
@@ -73,6 +73,7 @@ async fn capabilities(client: &reqwest::Client, url: &str, key: &str) -> Value {
 }
 fn save(current: &Value, url: &str) -> Save {
     Save {
+        provider_id: None,
         similarity_threshold: None,
         batch_size: None,
         expected_revision: current["revision"].as_i64().unwrap(),
@@ -167,6 +168,8 @@ async fn preflight_capabilities_follow_live_scope_and_generation_without_model_c
         .remember(
             work,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: "虚构项目每周四核对发布计划".into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
@@ -225,6 +228,8 @@ async fn preflight_capabilities_follow_live_scope_and_generation_without_model_c
         .remember(
             work,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: "虚构项目新增的发布负责人".into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,

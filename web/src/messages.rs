@@ -10,6 +10,8 @@ pub struct Conversation {
     pub agent_id: Option<String>,
     pub session_id: String,
     pub origin: Origin,
+    pub title: String,
+    pub extraction: serde_json::Value,
     pub preview: String,
     pub message_count: i64,
     pub received_at: String,
@@ -31,6 +33,8 @@ pub struct Page<T> {
     pub page: u64,
     pub has_more: bool,
     pub as_of: String,
+    #[serde(default)]
+    pub conversation_info: Option<serde_json::Value>,
 }
 
 /// 同一页面只有一个在途读取；切会话、筛选、离开页面都会作废旧响应。

@@ -46,7 +46,14 @@ async fn fixture(variable: &str, seed: u8) -> Fixture {
     options.sqlx_logging(false);
     let db = Database::connect(options).await.unwrap();
     migration::Migrator::up(&db, None).await.unwrap();
-    let pem = SecretKey::from_slice(&[seed; 32])
+    // 同一数据库代表同一实例，所有用例复用固定根私钥；空间命名仍使用独立 seed。
+    // 源实例和目标实例保持不同根私钥，继续验证跨实例重新加密。
+    let key_seed = if variable == "CHROMIE_TRANSFER_TARGET_DATABASE_URL" {
+        52
+    } else {
+        51
+    };
+    let pem = SecretKey::from_slice(&[key_seed; 32])
         .unwrap()
         .to_pkcs8_pem(LineEnding::LF)
         .unwrap();
@@ -113,6 +120,8 @@ async fn remember(f: &Fixture, content: String) -> Uuid {
         .remember(
             f.space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content,
                 request_id: Uuid::now_v7(),
                 scope: Scope::Project {
@@ -130,6 +139,8 @@ async fn correct(f: &Fixture, id: Uuid, revision: i32, content: &str) {
         .correct(
             f.space,
             Correct {
+                memory_type: Default::default(),
+                links: None,
                 memory_id: id,
                 expected_revision: revision,
                 request_id: Uuid::now_v7(),
@@ -203,6 +214,88 @@ fn encode(bundle: &Bundle) -> Vec<u8> {
         .unwrap();
     writer.finish().unwrap();
     out
+}
+
+#[tokio::test]
+#[ignore = "需要两个真实隔离 MySQL 数据库"]
+async fn graph_transfer_preserves_topics_remaps_evidence_and_reports_stale_dependencies() {
+    use chromie::knowledge::{Link, MemoryType, Neighbors, Relation};
+    let source = fixture("CHROMIE_TEST_DATABASE_URL", 81).await;
+    let target = fixture("CHROMIE_TRANSFER_TARGET_DATABASE_URL", 82).await;
+    let note = remember(&source, "虚构检查流程".into()).await;
+    correct(&source, note, 1, "虚构检查流程第二版").await;
+    async fn linked(f: &Fixture, note: Uuid, relation: Relation) -> Uuid {
+        let value = f
+            .store
+            .remember(
+                f.space,
+                Remember {
+                    content: format!("虚构主题入口 {relation:?}"),
+                    request_id: Uuid::now_v7(),
+                    scope: Scope::Project {
+                        project_key: "fictional-project".into(),
+                    },
+                    source_refs: vec![],
+                    memory_type: MemoryType::Topic,
+                    links: vec![Link {
+                        memory_id: note,
+                        relation,
+                        revision: if relation == Relation::DerivedFrom {
+                            Some(2)
+                        } else {
+                            None
+                        },
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        Uuid::parse_str(value["memory_id"].as_str().unwrap()).unwrap()
+    }
+    let topic = linked(&source, note, Relation::DerivedFrom).await;
+    let navigation = linked(&source, note, Relation::Reference).await;
+    let bytes = export(&source).await;
+    assert_eq!(decode(&bytes).version, 2);
+    let plan = preview(&target, &bytes).await;
+    assert_eq!(plan["new"], 3);
+    assert_eq!(confirm(&target, &bytes, &plan).await["imported"], 3);
+    let entry = get(&target, topic).await;
+    assert_eq!(entry["memory_type"], "topic");
+    assert_eq!(entry["knowledge"]["needs_review"], false);
+    let links = target
+        .store
+        .memory_neighbors(
+            target.space,
+            Neighbors {
+                memory_id: topic,
+                incoming: false,
+                cursor: None,
+                project_key: None,
+                max_chars: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        links["memories"][0]["relations"][0]["revision"], 1,
+        "源修订 2 的相同正文在目标实例成为修订 1"
+    );
+    correct(&source, note, 2, "虚构检查流程第三版").await;
+    let fresh = fixture("CHROMIE_TRANSFER_TARGET_DATABASE_URL", 83).await;
+    let stale = preview(&fresh, &export(&source).await).await;
+    assert_eq!(
+        stale["conflicts"], 1,
+        "包没有旧依据正文时不能把过期摘要变成新的已核对事实"
+    );
+    forget(&source, note, 3).await;
+    let package = decode(&export(&source).await);
+    assert_eq!(package.records.len(), 1);
+    assert_eq!(package.records[0].memory_id, navigation);
+    assert!(
+        package.records[0].links.is_empty(),
+        "已遗忘的普通引用不应成为导入时的悬空依赖"
+    );
+    package.validate().unwrap();
 }
 fn multipart(bytes: &[u8], password: Option<&str>, phrase: &str, digest: Option<&str>) -> Vec<u8> {
     let mut body = Vec::new();
@@ -402,6 +495,8 @@ async fn transfer_unlock_is_reused_by_the_same_login_and_revoked_by_lock_logout_
         source_name: "虚构解锁验收".into(),
         exported_at: "2026-11-05T00:00:00Z".into(),
         records: vec![Record {
+            memory_type: Default::default(),
+            links: vec![],
             memory_id: Uuid::now_v7(),
             source_revision: 1,
             content: "【虚构解锁验收】凭据只用于本次测试。".into(),
@@ -501,6 +596,8 @@ async fn paged_preview_covers_the_whole_package_and_confirmation_is_not_limited_
         exported_at: "2026-11-05T00:00:00Z".into(),
         records: (0..101)
             .map(|i| Record {
+                memory_type: Default::default(),
+                links: vec![],
                 memory_id: Uuid::now_v7(),
                 source_revision: 1,
                 content: format!("虚构分页记忆 {i}"),
@@ -887,6 +984,8 @@ async fn soul_transfer_cross_instance_auth_conflicts_replay_and_revision_guards(
         serde_json::from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
     parallel.package_id = Uuid::now_v7();
     parallel.records = vec![Record {
+        memory_type: Default::default(),
+        links: vec![],
         memory_id: Uuid::now_v7(),
         source_revision: 3,
         content: "并发导入虚构记忆".into(),
@@ -914,6 +1013,8 @@ async fn soul_transfer_cross_instance_auth_conflicts_replay_and_revision_guards(
     custom.package_id = Uuid::now_v7();
     custom.records = vec![
         Record {
+            memory_type: Default::default(),
+            links: vec![],
             memory_id: Uuid::now_v7(),
             source_revision: 1,
             content: "二进制虚构载荷".into(),
@@ -924,6 +1025,8 @@ async fn soul_transfer_cross_instance_auth_conflicts_replay_and_revision_guards(
             }),
         },
         Record {
+            memory_type: Default::default(),
+            links: vec![],
             memory_id: Uuid::now_v7(),
             source_revision: 1,
             content: format!("secret://{}/{}", source.slug, Uuid::now_v7()),

@@ -26,6 +26,7 @@ def main():
     source = root / "integrations/codex"
     files = [".agents/plugins/marketplace.json", "README.md", "plugin/.codex-plugin/plugin.json",
              "plugin/skills/setup/SKILL.md", "plugin/hooks/hooks.json", "plugin/scripts/capture.sh", "plugin/assets/icon.svg"]
+    files.extend(str(path.relative_to(source)) for path in sorted((source / "plugin/skills/memory").rglob("*")) if path.is_file())
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in files:

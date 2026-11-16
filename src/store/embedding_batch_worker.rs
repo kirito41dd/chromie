@@ -279,7 +279,7 @@ impl Store {
             self.finish_embedding_task(first, Ok(None)).await?;
             return Ok(1);
         }
-        let connection = self.model_connection(&first.generation);
+        let connection = self.model_connection(&first.generation).await;
         let batch_size = connection
             .as_ref()
             .map_err(|error| Error {

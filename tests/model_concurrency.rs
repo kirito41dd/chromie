@@ -79,6 +79,7 @@ async fn calls(model: &Model, expected: usize) {
 }
 fn input(state: &Value, url: &str, limit: Option<u32>) -> Save {
     Save {
+        provider_id: None,
         similarity_threshold: None,
         batch_size: None,
         expected_revision: state["revision"].as_i64().unwrap(),
@@ -98,6 +99,8 @@ async fn put(store: &Store, space: SpaceId, text: &str) {
         .remember(
             space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: text.into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,

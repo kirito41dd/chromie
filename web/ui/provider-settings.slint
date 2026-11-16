@@ -1,0 +1,99 @@
+import { ComboBox, CheckBox } from "std-widgets.slint";
+import { Theme, ActionButton, InputField } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+
+export component ProviderSettings inherits Rectangle {
+    in property <[string]> names;
+    in property <bool> busy;
+    in property <bool> has-key;
+    in property <string> error;
+    in property <string> notice;
+    in property <string> summary;
+    in property <bool> creating;
+    in-out property <int> selected: -1;
+    in-out property <string> name;
+    in-out property <string> url;
+    in-out property <string> key;
+    in-out property <bool> no-key;
+    in-out property <bool> editing;
+    callback select;
+    callback create;
+    callback edit;
+    callback save;
+    callback edited;
+    height: layout.preferred-height;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    layout := VerticalLayout {
+        padding: root.width < 500px ? 18px : 24px; spacing: 12px;
+        Text { text: "模型服务商"; color: Theme.ink; font-size: 19px; font-weight: 600; }
+        SelectableText { text: "服务地址和 Key 只配置一次，文本模型与向量模型均可使用。"; text-color: Theme.secondary; font-size: 13px; }
+        HorizontalLayout {
+            spacing: 10px;
+            if root.names.length > 0: ComboBox { model: root.names; current-index <=> root.selected; enabled: !root.busy; selected(_) => { root.select(); } }
+            if !root.editing && root.selected >= 0: ActionButton { label: "编辑连接"; subtle: true; disabled: root.busy; min-width: 92px; activated => { root.edit(); } }
+            ActionButton { label: root.creating && !root.editing && root.names.length > 0 ? "继续新增" : "新增服务商"; subtle: true; disabled: root.busy; min-width: 108px; activated => { root.create(); } }
+        }
+        if !root.editing && root.selected >= 0: SelectableText { text: root.summary; text-color: Theme.muted; font-size: 12px; }
+        // 已保存选择、草稿目标与展开状态独立，新增或收起都不清空已有服务商。
+        if root.editing || root.names.length == 0: VerticalLayout {
+            spacing: 12px;
+        Text { text: root.creating ? "新服务商名称" : "名称"; color: Theme.secondary; font-size: 12px; }
+        InputField { value <=> root.name; hint: "例如：我的模型网关"; disabled: root.busy; edited => { root.edited(); } }
+        Text { text: "服务地址 · OpenAI 兼容接口"; color: Theme.secondary; font-size: 12px; }
+        InputField { value <=> root.url; hint: "https://example.com/v1"; disabled: root.busy; edited => { root.edited(); } }
+        Text { text: "API Key"; color: Theme.secondary; font-size: 12px; }
+        InputField { value <=> root.key; hint: root.has-key ? "已保存，留空保留" : "输入 API Key"; masked: true; disabled: root.busy || root.no-key; edited => { root.edited(); } }
+        CheckBox { text: "接口无需 API Key"; checked <=> root.no-key; enabled: !root.busy; toggled => { root.edited(); } }
+        SelectableText { text: "连接测试在下方选择模型后进行。修改连接会同时影响引用此服务商的用途。"; text-color: Theme.muted; font-size: 12px; }
+        HorizontalLayout { alignment: start;
+            ActionButton { label: root.busy ? "保存中…" : "保存服务商"; disabled: root.busy; min-width: 108px; activated => { root.save(); } }
+            if root.names.length > 0: ActionButton { label: "收起"; subtle: true; disabled: root.busy; min-width: 64px; activated => { root.editing = false; } }
+        }
+        }
+        if root.error != "": SelectableText { text: root.error; text-color: #a13b33; font-size: 13px; }
+        if root.notice != "": SelectableText { text: root.notice; text-color: Theme.green; font-size: 13px; }
+    }
+}
+
+export component OrganizationSettings inherits Rectangle {
+    in property <bool> busy;
+    in property <string> error;
+    in property <string> notice;
+    in-out property <bool> enabled;
+    in-out property <bool> extraction-enabled;
+    in-out property <string> batch;
+    in-out property <string> interval;
+    in-out property <string> limit;
+    private property <bool> advanced;
+    callback edited;
+    callback save;
+    height: layout.preferred-height;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    layout := VerticalLayout {
+        padding: root.width < 500px ? 18px : 24px; spacing: 12px;
+        Text { text: "后台记忆处理"; color: Theme.ink; font-size: 19px; font-weight: 600; }
+        SelectableText { text: "后台分批整理各空间的普通记忆，先覆盖历史，再处理新增和更正。无需逐批点击，进度显示在看板。"; text-color: Theme.secondary; font-size: 13px; }
+        CheckBox { text: "自动整理普通记忆"; checked <=> root.enabled; enabled: !root.busy; toggled => { root.edited(); } }
+        SelectableText { text: "使用已配置的文本模型，普通记忆正文将发送到所选服务商。Secret 和原始采集消息不参与此项。"; text-color: Theme.muted; font-size: 12px; }
+        CheckBox { text: "自动提炼对话并命名"; checked <=> root.extraction-enabled; enabled: !root.busy; toggled => { root.edited(); } }
+        SelectableText { text: "开启后，各空间历史和新增的原始对话将发送到文本模型，分批提炼长期记忆并更新会话标题；已处理消息不重复提炼。默认关闭。"; text-color: Theme.muted; font-size: 12px; }
+        HorizontalLayout { alignment: start;
+            ActionButton { label: root.advanced ? "收起运行参数" : "运行参数"; subtle: true; height: 32px; activated => { root.advanced = !root.advanced; } }
+        }
+        if root.advanced: VerticalLayout {
+            spacing: 10px;
+            Text { text: "每批记忆／新消息数 · 1～10"; color: Theme.secondary; font-size: 12px; }
+            InputField { value <=> root.batch; hint: "10"; disabled: root.busy; edited => { root.edited(); } }
+            Text { text: "批次间隔 · 秒"; color: Theme.secondary; font-size: 12px; }
+            InputField { value <=> root.interval; hint: "60"; disabled: root.busy; edited => { root.edited(); } }
+            Text { text: "每日自动处理次数上限"; color: Theme.secondary; font-size: 12px; }
+            InputField { value <=> root.limit; hint: "100"; disabled: root.busy; edited => { root.edited(); } }
+            SelectableText { text: "所有空间共享。提炼一批通常占2次（生成、核对），主题整理占1次，失败重试也计入。北京时间每天08:00重置；没有待处理资料时不调用模型。"; text-color: Theme.muted; font-size: 12px; }
+        }
+        if root.error != "": SelectableText { text: root.error; text-color: #a13b33; font-size: 13px; }
+        if root.notice != "": SelectableText { text: root.notice; text-color: Theme.green; font-size: 13px; }
+        HorizontalLayout { alignment: start;
+            ActionButton { label: root.busy ? "保存中…" : "保存后台处理"; disabled: root.busy; min-width: 120px; activated => { root.save(); } }
+        }
+    }
+}

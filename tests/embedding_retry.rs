@@ -41,6 +41,7 @@ async fn embed(State(model): State<Arc<Model>>) -> (StatusCode, Json<Value>) {
 }
 fn save(value: &Value, url: &str) -> Save {
     Save {
+        provider_id: None,
         similarity_threshold: None,
         batch_size: None,
         expected_revision: value["revision"].as_i64().unwrap(),
@@ -60,6 +61,8 @@ async fn put(store: &Store, space: SpaceId) -> Uuid {
         .remember(
             space,
             Remember {
+                memory_type: Default::default(),
+                links: Vec::new(),
                 content: "虚构的后台自动恢复验收记忆".into(),
                 request_id: Uuid::now_v7(),
                 scope: Scope::Global,
