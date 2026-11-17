@@ -1,12 +1,38 @@
 import { SelectableText, SelectableArea } from "selectable-text.slint";
-import { ComboBox } from "std-widgets.slint";
+import { ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme, ActionButton, InputField } from "common.slint";
 
-export struct ConversationRow { title:string, preview:string, meta:string }
-export struct CapturedRow { id:string, role:string, user:bool, body:string, time:string, metadata:string, truncated:bool }
+export struct ConversationRow { title: string, preview: string, meta: string }
+export struct CapturedRow { id: string, role: string, user: bool, body: string, time: string, metadata: string, truncated: bool }
+
+component ConversationCard inherits Rectangle {
+    in property <ConversationRow> item;
+    in property <bool> selected;
+    in property <bool> disabled;
+    callback activated;
+    height: content.preferred-height;
+    background: root.selected ? Theme.accent-soft : (touch.has-hover ? Theme.surface-hover : Theme.paper);
+    border-radius: 9px; border-width: 1px;
+    border-color: root.selected || keyboard.has-focus ? Theme.accent : transparent;
+    accessible-role: button; accessible-label: root.item.title;
+    accessible-action-default => { if !root.disabled { root.activated(); } }
+    forward-focus: keyboard;
+    content := VerticalLayout {
+        padding: 14px; spacing: 7px; alignment: start;
+        Text { text: root.item.title; color: Theme.ink; font-size: 13px; font-weight: 600; overflow: elide; wrap: no-wrap; height: 20px; }
+        Text { text: root.item.preview; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: 36px; overflow: elide; }
+        Text { text: root.item.meta; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+    }
+    keyboard := FocusScope {
+        enabled: !root.disabled; focus-on-click: false;
+        key-pressed(event) => {
+            if !event.repeat && (event.text == Key.Return || event.text == " ") { root.activated(); accept } else { reject }
+        }
+    }
+    touch := TouchArea { enabled: !root.disabled; mouse-cursor: pointer; clicked => { keyboard.focus(); root.activated(); } }
+}
 
 component SessionPane inherits Rectangle {
-    in property <bool> compact;
     in property <bool> busy;
     in property <[ConversationRow]> sessions;
     in property <int> selected;
@@ -14,26 +40,36 @@ component SessionPane inherits Rectangle {
     in property <bool> more;
     callback select(int);
     callback turn(int);
-    min-width:0px; height: list.preferred-height;
-    list:=VerticalLayout { spacing:10px;
-        Text {text:"会话";color:Theme.ink;font-size:14px;font-weight:600;height:24px;}
-        if root.sessions.length == 0: Rectangle {height:120px;background:Theme.paper;border-radius:10px;
-            Text {text:root.busy?"正在读取会话…":"暂无采集消息";color:Theme.muted;font-size:13px;horizontal-alignment:center;vertical-alignment:center;}
+    min-width: 0px;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    VerticalLayout {
+        padding: 10px; spacing: 8px;
+        HorizontalLayout {
+            padding-left: 6px; padding-right: 6px; height: 32px; cross-axis-alignment: center;
+            Text { text: "会话"; color: Theme.ink; font-size: 14px; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: root.busy ? "读取中…" : "本页 " + root.sessions.length + " 个"; color: Theme.muted; font-size: 11px; }
         }
-        for session[index] in root.sessions: Rectangle {
-            min-width:0px; height:row.preferred-height;background:root.selected==index?#f0edff:Theme.paper;
-            border-radius:10px;border-width:1px;border-color:root.selected==index?#c5bafa:Theme.border;
-            row:=VerticalLayout {padding:16px;spacing:7px;
-                Text {text:session.title;color:Theme.ink;font-size:13px;font-weight:600;overflow:elide;height:20px;}
-                Text {text:session.preview;color:Theme.secondary;font-size:12px;wrap:word-wrap;height:38px;overflow:elide;}
-                Text {text:session.meta;color:Theme.muted;font-size:11px;wrap:word-wrap;}
+        list-scroll := ScrollView {
+            horizontal-scrollbar-policy: always-off; content-width: self.visible-width; vertical-stretch: 1;
+            VerticalLayout {
+                x: 0px; y: 0px; width: list-scroll.visible-width; height: self.preferred-height; alignment: start; spacing: 6px; padding-right: 4px;
+                if root.sessions.length == 0: Rectangle {
+                    height: 160px;
+                    Text { text: root.busy ? "正在读取会话…" : "暂无采集消息\n接入 Agent 并启用 Hook 后，消息会出现在这里"; color: Theme.muted; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                for session[index] in root.sessions: ConversationCard {
+                    item: session; selected: root.selected == index; disabled: root.busy;
+                    activated => { root.select(index); }
+                }
             }
-            TouchArea {enabled:!root.busy;mouse-cursor:pointer;clicked=>{root.select(index);}}
         }
-        HorizontalLayout {spacing:8px;alignment:start;
-            ActionButton {label:"上一页";min-width:70px;height:34px;subtle:true;disabled:root.busy||root.page==0;activated=>{root.turn(-1);}}
-            Text {text:""+(root.page+1);color:Theme.muted;font-size:12px;vertical-alignment:center;}
-            ActionButton {label:"下一页";min-width:70px;height:34px;subtle:true;disabled:root.busy||!root.more;activated=>{root.turn(1);}}
+        Rectangle { height: 1px; background: Theme.border; }
+        HorizontalLayout {
+            height: 38px; spacing: 6px; cross-axis-alignment: center;
+            ActionButton { label: "上一页"; min-width: 66px; height: 32px; subtle: true; disabled: root.busy || root.page == 0; activated => { root.turn(-1); list-scroll.content-y = 0px; } }
+            Text { text: "第 " + (root.page + 1) + " 页"; color: Theme.muted; font-size: 11px; horizontal-alignment: center; horizontal-stretch: 1; }
+            ActionButton { label: "下一页"; min-width: 66px; height: 32px; subtle: true; disabled: root.busy || !root.more; activated => { root.turn(1); list-scroll.content-y = 0px; } }
         }
     }
 }
@@ -47,72 +83,121 @@ component ThreadPane inherits Rectangle {
     in property <string> history;
     in property <bool> title-locked;
     in-out property <string> title-draft;
-    private property <bool> editing-title;
-    private property <bool> show-history;
-    callback save-title(bool);
     in property <[CapturedRow]> messages;
     in property <int> page;
     in property <bool> more;
     in property <string> expanded;
     in property <string> full-body;
     in property <string> full-note;
+    in property <bool> extract-enabled;
+    in property <bool> extract-busy;
+    in property <string> extract-note;
+    in property <string> extract-error;
+    private property <bool> more-open;
+    private property <bool> editing-title;
+    private property <bool> show-history;
     private property <string> debug-id;
-    changed title=>{root.debug-id="";root.editing-title=false;root.show-history=false;}
-    changed page=>{root.debug-id="";}
+    changed title => { root.debug-id = ""; root.editing-title = false; root.show-history = false; root.more-open = false; }
+    changed page => { root.debug-id = ""; }
+    callback reset-scroll;
+    reset-scroll => { message-scroll.content-y = 0px; }
+    callback save-title(bool);
     callback back;
     callback turn(int);
     callback expand(string);
-    min-width:0px;max-width:100000px;preferred-width:0px;horizontal-stretch:1;height:thread.preferred-height;
-    thread:=VerticalLayout {spacing:14px;
-        if !root.selected: Rectangle {height:240px;background:Theme.paper;border-radius:12px;border-width:1px;border-color:Theme.border;
-            VerticalLayout {padding:28px;spacing:10px;alignment:center;
-                Text {text:"选择一个会话";color:Theme.ink;font-size:18px;font-weight:600;horizontal-alignment:center;}
-                Text {text:"查看用户消息、助手回复和采集详情";color:Theme.muted;font-size:12px;wrap:word-wrap;horizontal-alignment:center;}
+    callback extract;
+    min-width: 0px; horizontal-stretch: 1;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: heading.preferred-height;
+            heading := VerticalLayout {
+                padding: root.compact ? 14px : 20px; spacing: 8px; alignment: start;
+                HorizontalLayout {
+                    spacing: 8px; cross-axis-alignment: center;
+                    if root.compact && root.selected: ActionButton { label: "‹ 会话"; min-width: 64px; height: 32px; subtle: true; activated => { root.back(); } }
+                    Text { text: root.selected ? root.title : "消息正文"; color: Theme.ink; font-size: 14px; font-weight: 600; overflow: elide; wrap: no-wrap; horizontal-stretch: 1; min-width: 0px; }
+                    if root.selected: ActionButton {
+                        label: root.more-open ? "收起操作" : "更多操作"; min-width: 76px; height: 32px; subtle: true;
+                        activated => { root.more-open = !root.more-open; if root.more-open { root.reset-scroll(); } }
+                    }
+                }
+                if root.selected: Text { text: root.busy ? "正在读取消息…" : "第 " + (root.page + 1) + " 页 · 从旧到新排列 · 第 1 页为最近消息"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
             }
         }
-        if root.selected: VerticalLayout {spacing:14px;
-            HorizontalLayout {spacing:12px;
-                if root.compact: ActionButton {label:"返回会话";width:90px;height:34px;subtle:true;activated=>{root.back();}}
-                SelectableText {text:root.title;text-color:Theme.ink;font-size:14px;font-weight:600;wrap:word-wrap;vertical-alignment:center;horizontal-stretch:1;min-width:0px;}
-            }
-            SelectableText {text:root.info;text-color:Theme.muted;font-size:12px;wrap:word-wrap;}
-            HorizontalLayout {spacing:8px;alignment:start;
-                ActionButton {label:root.editing-title?"取消命名":"固定标题";height:30px;min-width:76px;subtle:true;disabled:root.busy;activated=>{root.editing-title=!root.editing-title;}}
-                if root.title-locked: ActionButton {label:"恢复自动";height:30px;min-width:76px;subtle:true;disabled:root.busy;activated=>{root.save-title(false);}}
-                if root.history!="": ActionButton {label:root.show-history?"收起历史":"标题历史";height:30px;min-width:76px;subtle:true;activated=>{root.show-history=!root.show-history;}}
-            }
-            if root.editing-title: HorizontalLayout {spacing:8px;
-                InputField {value <=> root.title-draft;hint:"输入简短标题";disabled:root.busy;horizontal-stretch:1;}
-                ActionButton {label:"保存";min-width:64px;disabled:root.busy||root.title-draft=="";activated=>{root.save-title(true);root.editing-title=false;}}
-            }
-            if root.show-history: SelectableText {text:root.history;text-color:Theme.secondary;font-size:12px;wrap:word-wrap;}
-            Text {text:"按消息时间排列 · 当前为第 "+(root.page+1)+" 页，最近一页为第 1 页";color:Theme.muted;font-size:11px;wrap:word-wrap;}
-            if root.messages.length==0: Rectangle {height:100px;background:Theme.paper;border-radius:10px;
-                Text {text:root.busy?"正在读取消息…":"此会话暂无可显示的消息";color:Theme.muted;font-size:12px;horizontal-alignment:center;vertical-alignment:center;}
-            }
-            for message in root.messages: Rectangle {
-                min-width:0px;height:card.preferred-height;background:Theme.paper;border-radius:12px;border-width:1px;border-color:Theme.border;
-                Rectangle {x:0px;y:20px;width:3px;height:20px;border-radius:2px;background:message.user?Theme.accent:#21a68c;}
-                card:=VerticalLayout {padding:root.compact?16px:20px;spacing:12px;
-                    HorizontalLayout {spacing:8px;
-                        Text {text:message.role;color:message.user?#6c50c6:#147e70;font-size:12px;font-weight:600;}
-                        Rectangle {horizontal-stretch:1;}
-                        SelectableText {text:message.time;text-color:Theme.muted;font-size:11px;}
+        Rectangle { height: 1px; background: Theme.border; }
+        message-scroll := ScrollView {
+            horizontal-scrollbar-policy: always-off; content-width: self.visible-width; vertical-stretch: 1;
+            VerticalLayout {
+                x: 0px; y: 0px; width: message-scroll.visible-width; height: self.preferred-height;
+                padding: root.compact ? 14px : 20px; spacing: 16px; alignment: start;
+                if !root.selected: Rectangle {
+                    height: 230px;
+                    VerticalLayout { alignment: center; spacing: 10px;
+                        Text { text: "选择一个会话"; color: Theme.ink; font-size: 18px; font-weight: 600; horizontal-alignment: center; }
+                        Text { text: "查看采集到的用户消息与助手回复"; color: Theme.muted; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
                     }
-                    if root.expanded!=message.id: SelectableText {text:message.body;text-color:Theme.ink;font-size:14px;wrap:word-wrap;}
-                    if root.expanded==message.id: SelectableArea {text:root.full-body;wrap:word-wrap;font-size:14px;height:320px;min-width:0px;}
-                    if root.expanded==message.id && root.full-note!="": SelectableText {text:root.full-note;text-color:Theme.muted;font-size:11px;wrap:word-wrap;}
-                    HorizontalLayout {spacing:8px;alignment:start;
-                        if message.truncated: ActionButton {label:root.expanded==message.id?"收起正文":"展开完整正文";min-width:110px;height:30px;subtle:true;disabled:root.busy;activated=>{root.expand(message.id);}}
-                        ActionButton {label:root.debug-id==message.id?"收起详情":"调试详情";min-width:82px;height:30px;subtle:true;activated=>{root.debug-id=root.debug-id==message.id?"":message.id;}}
+                }
+                if root.selected && root.more-open: Rectangle {
+                    height: tools.preferred-height; background: Theme.surface-hover; border-radius: 9px;
+                    tools := VerticalLayout {
+                        padding: 14px; spacing: 10px; alignment: start;
+                        SelectableText { text: root.info; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                        HorizontalLayout { spacing: 8px; alignment: start;
+                            ActionButton { label: root.editing-title ? "取消命名" : "固定标题"; height: 32px; min-width: 76px; subtle: true; disabled: root.busy; activated => { root.editing-title = !root.editing-title; } }
+                            if root.title-locked: ActionButton { label: "恢复自动"; height: 32px; min-width: 76px; subtle: true; disabled: root.busy; activated => { root.save-title(false); } }
+                            if root.history != "": ActionButton { label: root.show-history ? "收起历史" : "标题历史"; height: 32px; min-width: 76px; subtle: true; activated => { root.show-history = !root.show-history; } }
+                        }
+                        if root.editing-title: VerticalLayout { spacing: 8px;
+                            InputField { value <=> root.title-draft; hint: "输入简短标题"; disabled: root.busy; }
+                            HorizontalLayout { alignment: start;
+                                ActionButton { label: "保存标题"; min-width: 86px; height: 34px; disabled: root.busy || root.title-draft == ""; activated => { root.save-title(true); root.editing-title = false; } }
+                            }
+                        }
+                        if root.show-history: SelectableText { text: root.history; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+                        if root.extract-enabled: VerticalLayout { spacing: 8px;
+                            Text { text: "手动提炼会将本页前 10 条消息发送给已配置的文本模型，可能包含敏感内容。"; color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
+                            HorizontalLayout { alignment: start;
+                                ActionButton { label: root.extract-busy ? "正在提炼…" : "提炼本页消息"; height: 34px; min-width: 112px; subtle: true; disabled: root.extract-busy || root.busy || root.messages.length == 0; activated => { root.extract(); } }
+                            }
+                        }
+                        if root.extract-error != "": SelectableText { text: root.extract-error; text-color: Theme.danger; font-size: 12px; wrap: word-wrap; }
+                        if root.extract-note != "": SelectableText { text: root.extract-note; text-color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
                     }
-                    if root.debug-id==message.id: SelectableArea {text:message.metadata;code:true;wrap:word-wrap;font-size:11px;height:160px;min-width:0px;}
+                }
+                if root.selected && root.messages.length == 0: Rectangle {
+                    height: 140px;
+                    Text { text: root.busy ? "正在读取消息…" : "此会话暂无可显示的消息"; color: Theme.muted; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                for message in root.messages: Rectangle {
+                    min-width: 0px; height: card.preferred-height;
+                    card := VerticalLayout { spacing: 10px; alignment: start;
+                        HorizontalLayout { spacing: 8px; height: 22px; cross-axis-alignment: center;
+                            Rectangle { width: 3px; height: 14px; border-radius: 2px; background: message.user ? Theme.accent : Theme.green; }
+                            Text { text: message.role; color: message.user ? Theme.accent : Theme.green; font-size: 12px; font-weight: 600; }
+                            Rectangle { horizontal-stretch: 1; }
+                            SelectableText { text: message.time; text-color: Theme.muted; font-size: 11px; }
+                        }
+                        if root.expanded != message.id: SelectableText { text: message.body; text-color: Theme.ink; font-size: 14px; wrap: word-wrap; }
+                        if root.expanded == message.id: SelectableArea { text: root.full-body; wrap: word-wrap; font-size: 14px; height: 320px; min-width: 0px; }
+                        if root.expanded == message.id && root.full-note != "": SelectableText { text: root.full-note; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+                        HorizontalLayout { spacing: 8px; alignment: start;
+                            if message.truncated: ActionButton { label: root.expanded == message.id ? "收起正文" : "完整正文"; min-width: 76px; height: 30px; subtle: true; disabled: root.busy; activated => { root.expand(message.id); } }
+                            ActionButton { label: root.debug-id == message.id ? "收起详情" : "采集详情"; min-width: 76px; height: 30px; subtle: true; activated => { root.debug-id = root.debug-id == message.id ? "" : message.id; } }
+                        }
+                        if root.debug-id == message.id: SelectableArea { text: message.metadata; code: true; wrap: word-wrap; font-size: 11px; height: 160px; min-width: 0px; }
+                        Rectangle { height: 1px; background: Theme.border; }
+                    }
                 }
             }
-            HorizontalLayout {spacing:8px;alignment:start;
-                ActionButton {label:"更早消息";min-width:90px;height:36px;subtle:true;disabled:root.busy||!root.more;activated=>{root.turn(1);}}
-                ActionButton {label:"较新消息";min-width:90px;height:36px;subtle:true;disabled:root.busy||root.page==0;activated=>{root.turn(-1);}}
-            }
+        }
+        if root.selected: Rectangle { height: 1px; background: Theme.border; }
+        if root.selected: HorizontalLayout {
+            padding: 12px; spacing: 8px; alignment: start;
+            ActionButton { label: "更早消息"; min-width: 88px; height: 34px; subtle: true; disabled: root.busy || !root.more; activated => { root.turn(1); } }
+            ActionButton { label: "较新消息"; min-width: 88px; height: 34px; subtle: true; disabled: root.busy || root.page == 0; activated => { root.turn(-1); } }
+            Rectangle { horizontal-stretch: 1; }
         }
     }
 }
@@ -125,7 +210,7 @@ export component MessagesPage inherits Rectangle {
     in property <[string]> agents;
     in property <int> agent-index;
     in property <[ConversationRow]> sessions;
-    in property <int> selected:-1;
+    in property <int> selected: -1;
     in property <int> session-page;
     in property <bool> sessions-more;
     in property <string> thread-title;
@@ -133,54 +218,58 @@ export component MessagesPage inherits Rectangle {
     in property <string> title-history;
     in property <bool> title-locked;
     in-out property <string> title-draft;
-    callback save-title(bool);
     in property <[CapturedRow]> messages;
     in property <int> message-page;
     in property <bool> messages-more;
     in property <string> expanded;
     in property <string> full-body;
     in property <string> full-note;
+    in property <bool> extract-enabled;
+    in property <bool> extract-busy;
+    in property <string> extract-note;
+    in property <string> extract-error;
+    callback save-title(bool);
     callback refresh;
     callback filter(int);
     callback select(int);
     callback turn-sessions(int);
     callback turn-messages(int);
     callback expand(string);
-    min-width:0px;height:page.preferred-height;
-    page:=VerticalLayout {spacing:18px;
-        Rectangle {height:root.compact?114px:70px;background:Theme.paper;border-radius:12px;border-width:1px;border-color:Theme.border;
-            VerticalLayout {padding:16px;spacing:10px;
-                if !root.compact: HorizontalLayout {spacing:12px;cross-axis-alignment:center;
-                    Text {text:"Agent";font-size:12px;color:Theme.secondary;}
-                    ComboBox {model:root.agents;current-index:root.agent-index;width:220px;enabled:!root.busy;selected(value)=>{root.filter(self.current-index);}}
-                    Rectangle {horizontal-stretch:1;}
-                    Text {text:root.busy?"正在读取…":"手动刷新查看新消息";color:Theme.muted;font-size:12px;}
-                    ActionButton {label:"刷新";min-width:70px;height:36px;subtle:true;activated=>{root.refresh();}}
-                }
-                if root.compact: VerticalLayout {spacing:10px;
-                    ComboBox {model:root.agents;current-index:root.agent-index;enabled:!root.busy;selected(value)=>{root.filter(self.current-index);}}
-                    HorizontalLayout {spacing:8px;
-                        Text {text:root.busy?"正在读取…":"手动刷新查看新消息";color:Theme.muted;font-size:11px;vertical-alignment:center;}
-                        Rectangle {horizontal-stretch:1;}
-                        ActionButton {label:"刷新";min-width:60px;height:30px;subtle:true;activated=>{root.refresh();}}
-                    }
-                }
+    callback extract;
+    in property <int> scroll-reset;
+    changed scroll-reset => { thread.reset-scroll(); }
+    min-width: 0px;
+    VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            height: 42px; spacing: 10px; cross-axis-alignment: center;
+            ComboBox { model: root.agents; current-index: root.agent-index; width: root.compact ? min(160px, root.width - 90px) : 220px; enabled: !root.busy; selected(value) => { root.filter(self.current-index); } }
+            Rectangle { horizontal-stretch: 1; }
+            if !root.compact: Text { text: "原始消息 · 不参与直接召回"; color: Theme.muted; font-size: 12px; }
+            ActionButton { label: root.busy ? "读取中…" : "刷新"; min-width: 72px; height: 36px; subtle: true; disabled: root.busy; activated => { root.refresh(); } }
+        }
+        if root.error != "": Rectangle {
+            height: max(48px, error-label.preferred-height + 24px); border-radius: 8px; background: Theme.danger-soft;
+            error-label := SelectableText { x: 12px; width: parent.width - 24px; y: 12px; text: root.error; text-color: Theme.danger; font-size: 12px; wrap: word-wrap; }
+        }
+        HorizontalLayout {
+            spacing: root.wide ? 18px : 0px; vertical-stretch: 1;
+            // 保持面板实例：窄屏隐藏列表时不销毁，返回后沿用列表滚动位置。
+            SessionPane {
+                visible: root.wide || root.selected < 0; width: !self.visible ? 0px : root.wide ? 300px : parent.width;
+                busy: root.busy; sessions: root.sessions; selected: root.selected; page: root.session-page; more: root.sessions-more;
+                select(index) => { root.select(index); } turn(direction) => { root.turn-sessions(direction); }
+            }
+            thread := ThreadPane {
+                visible: root.wide || root.selected >= 0; width: self.visible ? (root.wide ? parent.width - 318px : parent.width) : 0px;
+                compact: !root.wide; busy: root.busy; selected: root.selected >= 0;
+                title: root.thread-title; info: root.thread-info; history: root.title-history; title-locked: root.title-locked;
+                title-draft <=> root.title-draft; messages: root.messages; page: root.message-page; more: root.messages-more;
+                expanded: root.expanded; full-body: root.full-body; full-note: root.full-note;
+                extract-enabled: root.extract-enabled; extract-busy: root.extract-busy; extract-note: root.extract-note; extract-error: root.extract-error;
+                save-title(fixed) => { root.save-title(fixed); } back => { root.select(-1); }
+                turn(direction) => { root.turn-messages(direction); } expand(id) => { root.expand(id); } extract => { root.extract(); }
             }
         }
-        if root.error!="": Rectangle {height:root.compact?80px:52px;border-radius:8px;background:#fcf0ed;
-            SelectableText {x:16px;width:parent.width - 32px;text:root.error;text-color:#a13b33;font-size:12px;wrap:word-wrap;vertical-alignment:center;height:parent.height;}
-        }
-        if root.wide: HorizontalLayout {spacing:22px;
-            VerticalLayout {width:300px;
-                SessionPane {compact:root.compact;busy:root.busy;sessions:root.sessions;selected:root.selected;page:root.session-page;more:root.sessions-more;select(index)=>{root.select(index);}turn(direction)=>{root.turn-sessions(direction);}}
-                Rectangle {vertical-stretch:1;}
-            }
-            VerticalLayout {horizontal-stretch:1;
-                ThreadPane {compact:false;busy:root.busy;selected:root.selected>=0;title:root.thread-title;info:root.thread-info;history:root.title-history;title-locked:root.title-locked;title-draft <=> root.title-draft;save-title(fixed)=>{root.save-title(fixed);}messages:root.messages;page:root.message-page;more:root.messages-more;expanded:root.expanded;full-body:root.full-body;full-note:root.full-note;turn(direction)=>{root.turn-messages(direction);}expand(id)=>{root.expand(id);}}
-                Rectangle {vertical-stretch:1;}
-            }
-        }
-        if !root.wide && root.selected<0: SessionPane {compact:root.compact;busy:root.busy;sessions:root.sessions;selected:root.selected;page:root.session-page;more:root.sessions-more;select(index)=>{root.select(index);}turn(direction)=>{root.turn-sessions(direction);}}
-        if !root.wide && root.selected>=0: ThreadPane {compact:true;busy:root.busy;selected:true;title:root.thread-title;info:root.thread-info;history:root.title-history;title-locked:root.title-locked;title-draft <=> root.title-draft;save-title(fixed)=>{root.save-title(fixed);}messages:root.messages;page:root.message-page;more:root.messages-more;expanded:root.expanded;full-body:root.full-body;full-note:root.full-note;back=>{root.select(-1);}turn(direction)=>{root.turn-messages(direction);}expand(id)=>{root.expand(id);}}
     }
 }

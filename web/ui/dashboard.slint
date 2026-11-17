@@ -5,7 +5,7 @@ import { ProviderSettings, OrganizationSettings } from "provider-settings.slint"
 import { TextModelSettings, KnowledgeTasks } from "text-model.slint";
 import { SelectableText } from "selectable-text.slint";
 import { CheckBox, ScrollView } from "std-widgets.slint";
-import { Theme, MemoryRow, SecretBadge, EyeButton, InputField, ActionButton } from "common.slint";
+import { Theme, MemoryRow, SecretBadge, EyeButton, InputField, ActionButton, SectionTabs } from "common.slint";
 import { MemoryFooter } from "memory-footer.slint";
 import { SecretDialog, SecretLine } from "secret-dialog.slint";
 import { AccessPage, AgentRow } from "access.slint";
@@ -306,6 +306,8 @@ export component Dashboard inherits Window {
     callback text-extract;
     callback text-jobs-refresh;
     in property <[ExtractionJob]> extraction-jobs;
+    in property <bool> text-jobs-loading;
+    in property <string> text-jobs-read-error;
     in property <[ExtractionJob]> maintenance-jobs;
     in property <[ExtractionDecision]> extraction-decisions;
     in property <bool> extraction-open;
@@ -555,6 +557,11 @@ export component Dashboard inherits Window {
     callback show-recall;
     callback reset-scroll;
     reset-scroll => { scroll.content-y = 0px; scroll.content-x = 0px; }
+    callback reset-messages-thread-scroll;
+    private property <int> messages-scroll-generation: 0;
+    reset-messages-thread-scroll => { root.messages-scroll-generation += 1; }
+    private property <bool> messages-results-page: false;
+    private property <int> settings-section: 0;
     in property <bool> unlocked: false;
     in property <bool> loading: false;
     in property <bool> fresh: false;
@@ -675,10 +682,10 @@ export component Dashboard inherits Window {
                     }
                     if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: KnowledgeTasks {
                         automatic: root.text-jobs-automatic; enabled: root.text-jobs-enabled; busy: root.text-jobs-busy; summary: root.text-jobs-summary; detail: root.text-jobs-detail;
-                        result-id: root.text-jobs-result; error: root.text-jobs-error;
+                        result-id: root.text-jobs-result; error: root.text-jobs-error != "" ? root.text-jobs-error : root.text-jobs-read-error;
                         refresh => { root.text-jobs-refresh(); } open(id) => { root.knowledge-read(id); }
                     }
-                    if root.extraction-jobs.length > 0 && !root.recall-page && !root.access-page && !root.settings-page && !root.transfer-page: ExtractionResults {
+                    if root.extraction-jobs.length > 0 && !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: ExtractionResults {
                         jobs: root.extraction-jobs; open(id) => { root.extraction-read(id); }
                     }
                     if root.maintenance-jobs.length > 0 && !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: ExtractionResults {
@@ -712,7 +719,11 @@ export component Dashboard inherits Window {
                         export => { root.transfer-export(); } preview => { root.transfer-preview(); } confirm => { root.transfer-confirm(); }
                         turn(direction) => { root.transfer-turn(direction); }
                     }
-                    if root.settings-page && root.can-manage-system: ProviderSettings {
+                    if root.settings-page && root.can-manage-system: SectionTabs {
+                        labels: ["模型连接", "后台处理", "用量统计"]; selected: root.settings-section;
+                        select(index) => { root.settings-section = index; root.reset-scroll(); }
+                    }
+                    if root.settings-page && root.can-manage-system && root.settings-section == 0: ProviderSettings {
                         names: root.provider-names; busy: root.provider-busy; has-key: root.provider-has-key;
                         error: root.provider-error; notice: root.provider-notice;
                         creating: root.provider-creating; summary: root.provider-summary;
@@ -721,7 +732,7 @@ export component Dashboard inherits Window {
                         select => { root.provider-select(); } create => { root.provider-new(); } edit => { root.provider-edit(); }
                         save => { root.provider-save(); } edited => { root.provider-edited(); }
                     }
-                    if root.settings-page && root.can-manage-system: TextModelSettings {
+                    if root.settings-page && root.can-manage-system && root.settings-section == 0: TextModelSettings {
                         busy: root.text-model-busy; enabled: root.text-model-enabled; providers: root.provider-names; provider-index <=> root.text-provider-index;
                         loaded: root.text-model-loaded; configured: root.text-model-configured; dirty: root.text-model-dirty;
                         error: root.text-model-error; notice: root.text-model-notice;
@@ -730,7 +741,7 @@ export component Dashboard inherits Window {
                         edited => { root.text-model-edited(); } save => { root.text-model-save(); }
                         reload => { root.text-model-reload(); } test => { root.text-model-test(); } disable => { root.text-model-disable(); }
                     }
-                    if root.settings-page && root.can-manage-system: OrganizationSettings {
+                    if root.settings-page && root.can-manage-system && root.settings-section == 1: OrganizationSettings {
                         busy: root.organization-busy; enabled <=> root.organization-enabled; extraction-enabled <=> root.extraction-enabled;
                         loaded: root.organization-loaded; dirty: root.organization-dirty; model-ready: root.text-model-enabled;
                         saved-enabled: root.organization-saved-enabled; saved-extraction-enabled: root.extraction-saved-enabled;
@@ -740,7 +751,7 @@ export component Dashboard inherits Window {
                         edited => { root.organization-edited(); } save => { root.organization-save(); }
                         reload => { root.organization-reload(); }
                     }
-                    if root.settings-page: ModelSettings {
+                    if root.settings-page && (!root.can-manage-system || root.settings-section == 0): ModelSettings {
                         viewport-width: root.width; viewport-height: root.height;
                         allowed: root.can-manage-system; compact: root.compact; busy: root.model-busy;
                         loaded: root.model-loaded; enabled: root.model-enabled; testing: root.model-testing; providers: root.provider-names; provider-index <=> root.model-provider-index;
@@ -752,12 +763,12 @@ export component Dashboard inherits Window {
                         advanced <=> root.model-advanced;
                         edited => { root.model-edited(); } reload => { root.model-reload(); } save => { root.model-save(); } test => { root.model-test(); }
                     }
-                    if root.settings-page && root.can-manage-system: ModelUsage {
+                    if root.settings-page && root.can-manage-system && root.settings-section == 2: ModelUsage {
                         compact: root.compact; available: root.model-usage-available;
                         today: root.model-usage-today; week: root.model-usage-week; total: root.model-usage-total;
                         note: root.model-usage-note; days: root.model-usage-days;
                     }
-                    if root.settings-page && root.can-manage-system && root.model-enabled: ModelMaintenance {
+                    if root.settings-page && root.can-manage-system && root.settings-section == 0 && root.model-enabled: ModelMaintenance {
                         compact: root.compact; busy: root.model-busy;
                         rebuild => { root.model-rebuild(); } disable => { root.model-disable(); }
                     }
@@ -785,30 +796,51 @@ export component Dashboard inherits Window {
                         choose-mode(codex) => { root.access-choose-mode(codex); }
                         choose-shell(nushell) => { root.access-choose-shell(nushell); }
                     }
-                    if root.messages-page && root.text-jobs-enabled: Rectangle {
-                        height: extract-layout.preferred-height;
-                        background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
-                        extract-layout := VerticalLayout {
-                            padding: 16px; spacing: 8px;
-                            SelectableText { text: root.messages-rows.length == 0 ? "选择会话后，可提炼当前页的前 10 条消息。" : "本页前 10 条消息将发送给已配置的文本模型，可能包含敏感内容。提炼只新增有来源的记忆。"; text-color: Theme.secondary; font-size: 12px; }
-                            HorizontalLayout {
-                                alignment: start;
-                                ActionButton { label: "提炼本页前 10 条消息"; subtle: true; disabled: root.text-jobs-busy || root.messages-busy || root.messages-rows.length == 0; min-width: 180px; activated => { root.text-extract(); } }
-                            }
-                            if root.text-jobs-error != "": SelectableText { text: root.text-jobs-error; text-color: #a13b33; font-size: 12px; }
-                            if root.text-jobs-error == "" && root.text-jobs-failure != "": SelectableText { text: root.text-jobs-failure; text-color: #a13b33; font-size: 12px; }
-                            if root.text-jobs-summary != "": SelectableText { text: root.text-jobs-summary; text-color: Theme.secondary; font-size: 12px; }
-                        }
+                    if root.messages-page: SectionTabs {
+                        labels: ["对话消息", "提炼结果"]; selected: root.messages-results-page ? 1 : 0;
+                        select(index) => { root.messages-results-page = index == 1; root.reset-scroll(); }
                     }
-                    if root.messages-page: MessagesPage {
+                    if root.messages-page: Rectangle {
                         width: page-content.width - 2 * root.page-padding;
-                        compact:root.compact;wide:root.wide;busy:root.messages-busy;error:root.messages-error;
-                        agents:root.messages-agents;agent-index:root.messages-agent-index;sessions:root.messages-sessions;selected:root.messages-selected;
-                        session-page:root.messages-session-page;sessions-more:root.messages-sessions-more;thread-title:root.messages-thread-title;thread-info:root.messages-thread-info;title-history:root.messages-title-history;title-locked:root.messages-title-locked;title-draft <=> root.messages-title-draft;save-title(fixed)=>{root.messages-save-title(fixed);}
-                        messages:root.messages-rows;message-page:root.messages-message-page;messages-more:root.messages-messages-more;
-                        expanded:root.messages-expanded;full-body:root.messages-full-body;full-note:root.messages-full-note;
-                        refresh=>{root.messages-refresh();}filter(index)=>{root.messages-filter(index);}select(index)=>{root.messages-select(index);}
-                        turn-sessions(direction)=>{root.messages-turn-sessions(direction);}turn-messages(direction)=>{root.messages-turn-messages(direction);}expand(id)=>{root.messages-expand(id);}
+                        height: max(360px, scroll.visible-height - (root.compact ? 180px : 200px));
+                        if root.messages-results-page: results-scroll := ScrollView {
+                            width: parent.width; height: parent.height;
+                            horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+                            VerticalLayout {
+                                x: 0px; y: 0px; width: results-scroll.visible-width; height: self.preferred-height; alignment: start; spacing: 12px;
+                                if root.text-jobs-read-error != "": Rectangle {
+                                    height: result-error.preferred-height; background: Theme.danger-soft; border-radius: 10px;
+                                    result-error := VerticalLayout {
+                                        padding: 16px; spacing: 10px; alignment: start;
+                                        SelectableText { text: root.text-jobs-read-error; text-color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+                                        HorizontalLayout { alignment: start;
+                                            ActionButton { label: root.text-jobs-loading ? "读取中…" : "重新读取"; subtle: true; height: 34px; min-width: 88px; disabled: root.text-jobs-loading; activated => { root.text-jobs-refresh(); } }
+                                        }
+                                    }
+                                }
+                                if root.extraction-jobs.length > 0: ExtractionResults {
+                                    jobs: root.extraction-jobs; open(id) => { root.extraction-read(id); }
+                                }
+                                if root.extraction-jobs.length == 0 && root.text-jobs-read-error == "": Text {
+                                    text: root.text-jobs-loading ? "正在读取提炼结果…" : "暂无提炼结果。开启后台消息提炼后，处理记录会出现在这里。"; color: Theme.muted; font-size: 13px; wrap: word-wrap;
+                                }
+                            }
+                        }
+                        // 隐藏而不压缩工作区，防止滚动容器因高度归零丢失位置。
+                        messages-workspace := MessagesPage {
+                            visible: !root.messages-results-page; width: parent.width; height: parent.height;
+                            compact:root.compact;wide:root.wide;busy:root.messages-busy;error:root.messages-error;
+                            scroll-reset: root.messages-scroll-generation;
+                            agents:root.messages-agents;agent-index:root.messages-agent-index;sessions:root.messages-sessions;selected:root.messages-selected;
+                            session-page:root.messages-session-page;sessions-more:root.messages-sessions-more;thread-title:root.messages-thread-title;thread-info:root.messages-thread-info;title-history:root.messages-title-history;title-locked:root.messages-title-locked;title-draft <=> root.messages-title-draft;save-title(fixed)=>{root.messages-save-title(fixed);}
+                            messages:root.messages-rows;message-page:root.messages-message-page;messages-more:root.messages-messages-more;
+                            expanded:root.messages-expanded;full-body:root.messages-full-body;full-note:root.messages-full-note;
+                            extract-enabled: root.text-jobs-enabled; extract-busy: root.text-jobs-busy;
+                            extract-note: root.text-jobs-summary; extract-error: root.text-jobs-error != "" ? root.text-jobs-error : root.text-jobs-failure;
+                            extract => { root.text-extract(); }
+                            refresh=>{root.messages-refresh();}filter(index)=>{root.messages-filter(index);}select(index)=>{root.messages-select(index);}
+                            turn-sessions(direction)=>{root.messages-turn-sessions(direction);}turn-messages(direction)=>{root.messages-turn-messages(direction);}expand(id)=>{root.messages-expand(id);}
+                        }
                     }
                     if root.recall-page: RecallPage {
                         width: page-content.width - 2 * root.page-padding;

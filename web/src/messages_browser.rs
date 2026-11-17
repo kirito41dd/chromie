@@ -99,6 +99,9 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
         let selected = usize::try_from(index)
             .ok()
             .and_then(|i| state.borrow().sessions.get(i).cloned());
+        if selected.is_some() && ui.get_messages_selected() == index {
+            return;
+        }
         state.borrow_mut().selected = selected.clone();
         ui.set_messages_selected(if selected.is_some() { index } else { -1 });
         clear_thread(&ui);
@@ -239,7 +242,6 @@ fn sessions(reset: bool) {
     s.messages.clear();
     ui.set_messages_selected(-1);
     clear_thread(&ui);
-    ui.invoke_reset_scroll();
     ui.set_messages_sessions(ModelRc::new(VecModel::<ConversationRow>::default()));
     let payload = json!({"agent_id":s.filter,"page":s.session_page,"as_of":s.session_snapshot});
     drop(s);
@@ -259,7 +261,8 @@ fn conversation(reset: bool) {
     }
     s.messages.clear();
     clear_thread(&ui);
-    ui.invoke_reset_scroll();
+    // 会话与消息分页只重置正文面板；列表位置和页面滚动属于用户当前浏览上下文。
+    ui.invoke_reset_messages_thread_scroll();
     let payload = json!({"agent_id":selected.agent_id,"session_id":selected.session_id,"page":s.message_page,"as_of":s.message_snapshot});
     drop(s);
     launch("conversation", payload);

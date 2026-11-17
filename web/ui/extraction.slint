@@ -32,10 +32,20 @@ export component ExtractionResults inherits Rectangle {
     height: layout.preferred-height;
     background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
     layout := VerticalLayout {
-        padding: 18px; spacing: 10px;
+        padding: 18px; spacing: 10px; alignment: start;
         Text { text: root.title; color: Theme.ink; font-size: 16px; font-weight: 600; }
         SelectableText { text: root.description; text-color: Theme.secondary; font-size: 12px; }
-        for job[index] in root.jobs: ExtractionJobRow { visible: root.expanded || index < 3; item: job; height: self.visible ? 64px : 0px; activated => { root.open(job.id); } }
+        // 隐藏行仍会参与布局间距；收起时只实例化实际展示的三行。
+        if !root.expanded: VerticalLayout {
+            spacing: 4px; alignment: start;
+            if root.jobs.length > 0: ExtractionJobRow { item: root.jobs[0]; activated => { root.open(root.jobs[0].id); } }
+            if root.jobs.length > 1: ExtractionJobRow { item: root.jobs[1]; activated => { root.open(root.jobs[1].id); } }
+            if root.jobs.length > 2: ExtractionJobRow { item: root.jobs[2]; activated => { root.open(root.jobs[2].id); } }
+        }
+        if root.expanded: VerticalLayout {
+            spacing: 4px; alignment: start;
+            for job in root.jobs: ExtractionJobRow { item: job; activated => { root.open(job.id); } }
+        }
         if root.jobs.length > 3: ActionButton { label: root.expanded ? "收起记录" : "查看更多记录"; subtle: true; height: 36px; activated => { root.expanded = !root.expanded; } }
     }
 }

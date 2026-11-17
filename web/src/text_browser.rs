@@ -100,6 +100,8 @@ pub(crate) fn clear() {
         ui.set_text_jobs_summary("".into());
         ui.set_text_jobs_detail("".into());
         ui.set_text_jobs_error("".into());
+        ui.set_text_jobs_loading(false);
+        ui.set_text_jobs_read_error("".into());
         ui.set_text_jobs_failure("".into());
         ui.set_text_jobs_result("".into());
         ui.set_extraction_jobs(slint::ModelRc::default());
@@ -187,6 +189,7 @@ fn launch(operation: &str, payload: Value) {
     }
     let generation = if matches!(operation, "jobs" | "queue") {
         state.borrow_mut().jobs_loading = true;
+        ui.set_text_jobs_loading(operation == "jobs");
         if operation == "queue" {
             ui.set_text_jobs_busy(true);
             ui.set_text_jobs_error("".into());
@@ -242,6 +245,7 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
     }
     if job {
         state.borrow_mut().jobs_loading = false;
+        ui.set_text_jobs_loading(false);
     } else {
         ui.set_text_model_busy(false);
     }
@@ -256,7 +260,11 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
             .unwrap_or("请求暂时失败，请刷新或检查模型配置。");
         if job {
             ui.set_text_jobs_busy(false);
-            ui.set_text_jobs_error(message.into());
+            if operation == "jobs" {
+                ui.set_text_jobs_read_error(message.into());
+            } else {
+                ui.set_text_jobs_error(message.into());
+            }
         } else {
             ui.set_text_model_error(message.into());
         }
@@ -332,6 +340,8 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
             launch("jobs", json!({}));
         }
         "jobs" => {
+            // 轮询读取失败与提交任务失败分别保留，恢复读取不能吞掉用户操作的错误。
+            ui.set_text_jobs_read_error("".into());
             let enabled = value["enabled"] == true;
             ui.set_text_jobs_enabled(enabled);
             let organization = &value["organization"];

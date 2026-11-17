@@ -23,6 +23,8 @@ export global Theme {
     out property <color> muted: #6b6b85;
     out property <color> border: #e5e5f2;
     out property <color> accent: #6d5ef7;
+    out property <color> accent-soft: #f0edff;
+    out property <color> surface-hover: #f7f6fc;
     out property <color> green: #129a83;
     out property <color> danger: #bc303b;
     out property <color> danger-hover: #a12631;
@@ -84,6 +86,21 @@ export component ActionButton inherits Rectangle {
     touch := TouchArea {
         enabled: !root.disabled; mouse-cursor: pointer;
         clicked => { keyboard.focus(); root.activated(); }
+    }
+}
+
+export component SectionTabs inherits Rectangle {
+    in property <[string]> labels;
+    in property <int> selected;
+    callback select(int);
+    height: 42px;
+    HorizontalLayout {
+        spacing: 6px; alignment: start; cross-axis-alignment: center;
+        for label[index] in root.labels: ActionButton {
+            label: label; subtle: root.selected != index;
+            width: min(112px, (parent.width - (root.labels.length - 1) * 6px) / root.labels.length); height: 36px;
+            activated => { if root.selected != index { root.select(index); } }
+        }
     }
 }
 
