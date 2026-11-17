@@ -323,7 +323,7 @@ pub fn receive_knowledge(operation: String, generation: u32, status: u16, body: 
                     },
                     value["revision"],
                     if value["pending_revisions"].as_u64().unwrap_or(0) > 0 {
-                        " · 有待确认变更，使用前需核对"
+                        " · 历史建议待 AI 复核，使用前核对来源"
                     } else if value["knowledge"]["needs_review"] == true {
                         " · 依据已变化，需要核对"
                     } else {

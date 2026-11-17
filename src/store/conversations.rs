@@ -76,6 +76,22 @@ impl Store {
             }
             .insert(db)
             .await?;
+            let keep = titles::Entity::find()
+                .filter(titles::Column::SpaceId.eq(meta.space_id.clone()))
+                .filter(titles::Column::ConversationKey.eq(meta.conversation_key.clone()))
+                .select_only()
+                .column(titles::Column::Revision)
+                .order_by_desc(titles::Column::Revision)
+                .limit(10)
+                .into_tuple::<i64>()
+                .all(db)
+                .await?;
+            titles::Entity::delete_many()
+                .filter(titles::Column::SpaceId.eq(meta.space_id.clone()))
+                .filter(titles::Column::ConversationKey.eq(meta.conversation_key.clone()))
+                .filter(titles::Column::Revision.is_not_in(keep))
+                .exec(db)
+                .await?;
         }
         let mut active = meta.into_active_model();
         active.revision = Set(next);

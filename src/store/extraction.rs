@@ -60,6 +60,10 @@ pub(super) fn in_conversation(
 impl Store {
     /// 两类业务交替获得同一个自动工作槽；空的一类不会阻塞另一类。
     pub async fn schedule_automatic(&self) -> Result<usize> {
+        let resumed = self.schedule_pending_review().await?;
+        if resumed > 0 {
+            return Ok(resumed);
+        }
         let last = settings::Entity::find_by_id(1u8)
             .one(&self.db)
             .await?

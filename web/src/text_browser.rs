@@ -224,7 +224,7 @@ fn state_name(state: &str) -> &'static str {
 
 #[wasm_bindgen]
 pub fn receive_text_model(operation: String, generation: u32, status: u16, body: String) {
-    if matches!(operation.as_str(), "review" | "apply-revision") {
+    if operation == "review" {
         crate::extraction_browser::receive(&operation, generation, status, &body);
         return;
     }
@@ -464,7 +464,7 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
                     if job["state"] == "done" {
                         if job["kind"] == "extract" && job["result"]["has_review"] == true {
                             format!(
-                                "新增 {} · 已修订 {} · 待修订 {} · 暂缓 {}",
+                                "新增 {} · 已修订 {} · 待 AI 复核 {} · 暂缓 {}",
                                 job["result"]["counts"]["create"],
                                 job["result"]["counts"]["applied"].as_u64().unwrap_or(0),
                                 job["result"]["pending_revisions"].as_u64().unwrap_or(0),
@@ -541,10 +541,4 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
 
 pub(crate) fn reload_settings() {
     launch("read", json!({}));
-}
-
-pub(crate) fn refresh_memories() {
-    if let Some((ui, _, _)) = active() {
-        ui.invoke_refresh();
-    }
 }

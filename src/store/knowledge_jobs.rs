@@ -32,11 +32,19 @@ pub(super) struct Snapshot {
     pub automatic: Option<AutomaticSnapshot>,
     #[serde(default)]
     pub review: Option<ReviewSnapshot>,
+    #[serde(default)]
+    pub pending_review: Option<PendingReview>,
     pub kind: JobKind,
     pub memories: Vec<MemorySnapshot>,
     pub events: Vec<EventSnapshot>,
     #[serde(default)]
     pub usage: Vec<super::use_reports::UseEvidence>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct PendingReview {
+    pub job_id: Uuid,
+    pub candidate_index: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -128,6 +136,7 @@ impl Store {
         let mut snapshot = Snapshot {
             kind: input.kind,
             review: None,
+            pending_review: None,
             automatic,
             memories: vec![],
             events: vec![],
@@ -269,7 +278,7 @@ impl Store {
             .limit(20)
             .all(&self.db)
             .await?;
-        // 待确认方案单独补读，避免普通新任务把旧方案挤出最近记录。
+        // 历史待复核结果单独补读，避免普通新任务将其挤出最近记录。
         let proposals = jobs::Entity::find()
             .filter(jobs::Column::SpaceId.eq(space.bytes()))
             .filter(jobs::Column::State.eq("done"))

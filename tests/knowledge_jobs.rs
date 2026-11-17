@@ -1,3 +1,5 @@
+#[path = "knowledge_jobs/autonomous.rs"]
+mod autonomous_tests;
 mod support;
 use axum::{
     Json, Router,
@@ -104,7 +106,7 @@ async fn complete(
     } else if input["kind"] == "review" {
         let target = *model.target.lock().unwrap();
         json!({"decisions":input["candidates"].as_array().unwrap().iter().enumerate().map(|(index,_)| {
-            if matches!(mode, 7 | 11 | 12 | 14 | 15 | 21) { let old=input["memories"].as_array().unwrap().iter().find(|m|m["id"].as_str().and_then(|s|Uuid::parse_str(s).ok())==target).unwrap(); json!({"candidate_index":index,"action":"propose_revision","reason":"用户明确改为周五","replacement":{"memory_id":old["id"],"expected_revision":old["revision"],"content":"虚构数据库检查：确认连接和复制状态；用户确认今后每周五检查。"},"evidence":if mode==11 || mode==12 { let user=input["events"].as_array().unwrap().iter().find(|e|e["role"]=="user").unwrap();json!([{"event_id":user["event_id"],"quote":if mode==12{json!("伪造的用户同意")}else{user["body"].clone()}}]) }else{json!([])}}) }
+            if matches!(mode, 7 | 11 | 12 | 14 | 15 | 21 | 28) { let old=input["memories"].as_array().unwrap().iter().find(|m|m["id"].as_str().and_then(|s|Uuid::parse_str(s).ok())==target).unwrap(); json!({"candidate_index":index,"action":"propose_revision","reason":"用户明确改为周五","replacement":{"memory_id":old["id"],"expected_revision":old["revision"],"content":"虚构数据库检查：确认连接和复制状态；用户确认今后每周五检查。"},"evidence":if mode==11 || mode==12 { let user=input["events"].as_array().unwrap().iter().find(|e|e["role"]=="user").unwrap();json!([{"event_id":user["event_id"],"quote":if mode==12{json!("伪造的用户同意")}else{user["body"].clone()}}]) }else{json!([])}}) }
             else { json!({"candidate_index":index,"action":"create","reason":"虚构证据已核对","replacement":null}) }
         }).collect::<Vec<_>>()})
     } else if mode == 5 {
@@ -158,6 +160,19 @@ async fn complete(
     }
     if input["kind"] != "probe" && mode == 19 {
         return Json(json!({"choices":[{"finish_reason":"length","message":{"content":"不得保存的输出片段"}}]})).into_response();
+    }
+    if input["kind"] == "extract" && matches!(mode, 27 | 28) {
+        content["candidates"][0]["category"] = json!("decision");
+        if mode == 28 {
+            content["candidates"][0]["source_refs"] = json!(
+                input["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| e["event_id"].clone())
+                    .collect::<Vec<_>>()
+            );
+        }
     }
     if input["kind"] == "extract" && mode == 13 {
         let proof = content["candidates"][0]["evidence"][0].clone();
@@ -1565,30 +1580,14 @@ async fn extraction_stages_resume_defer_invalid_evidence_and_apply_revision_once
         detail["result"]["decisions"][0]["action"],
         "propose_revision"
     );
-    let receipt = f
-        .store
-        .apply_extraction_revision(
-            f.space,
-            chromie::extraction::Apply {
-                job_id: id,
-                candidate_index: 0,
-            },
-        )
-        .await
-        .unwrap();
+    let receipt = detail["result"]["decisions"][0]["receipt"].clone();
     assert_eq!(receipt["revision"], 2);
-    let replay = f
-        .store
-        .apply_extraction_revision(
-            f.space,
-            chromie::extraction::Apply {
-                job_id: id,
-                candidate_index: 0,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(receipt, replay);
+    assert_eq!(detail["result"]["decisions"][0]["resolution"], "automatic");
+    assert_eq!(
+        resumed.sync_knowledge_due().await.unwrap(),
+        0,
+        "完成任务不重复执行"
+    );
     assert_eq!(job(&f, id).await.attempts, 2);
     // 后台查找不能增加Agent/Web召回热度。
     use sea_orm::{ColumnTrait, QueryFilter};
@@ -1721,39 +1720,9 @@ async fn extraction_review_rechecks_versions_and_forgetting_clears_published_pro
         .await
         .unwrap();
     finish_stage(&f).await;
-    assert_eq!(
-        f.store.knowledge_review(f.space, id).await.unwrap()["result"]["decisions"][0]["action"],
-        "propose_revision"
-    );
-    f.store
-        .correct(
-            f.space,
-            Correct {
-                request_id: Uuid::now_v7(),
-                memory_id: target,
-                expected_revision: 2,
-                content: Some("虚构数据库检查：另一个更新".into()),
-                scope: None,
-                source_refs: None,
-                memory_type: None,
-                links: None,
-                reason: "测试确认前版本变化".into(),
-            },
-        )
-        .await
-        .unwrap();
-    let error = f
-        .store
-        .apply_extraction_revision(
-            f.space,
-            chromie::extraction::Apply {
-                job_id: id,
-                candidate_index: 0,
-            },
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, "proposal_superseded");
+    let detail = f.store.knowledge_review(f.space, id).await.unwrap();
+    assert_eq!(detail["result"]["decisions"][0]["action"], "defer");
+    assert_eq!(detail["result"]["pending_revisions"], 0);
     let otherkey = SpaceKey::parse("review-other-space").unwrap();
     f.store
         .create_space(
@@ -1765,18 +1734,6 @@ async fn extraction_review_rechecks_versions_and_forgetting_clears_published_pro
         .unwrap();
     let other = f.store.resolve_space(&otherkey).await.unwrap();
     assert!(f.store.knowledge_review(other, id).await.is_err());
-    assert!(
-        f.store
-            .apply_extraction_revision(
-                other,
-                chromie::extraction::Apply {
-                    job_id: id,
-                    candidate_index: 0
-                }
-            )
-            .await
-            .is_err()
-    );
     f.store
         .forget(
             f.space,
@@ -1791,18 +1748,6 @@ async fn extraction_review_rechecks_versions_and_forgetting_clears_published_pro
         .unwrap();
     let cleared = f.store.knowledge_review(f.space, id).await.unwrap();
     assert!(cleared["result"]["decisions"].is_null());
-    assert!(
-        f.store
-            .apply_extraction_revision(
-                f.space,
-                chromie::extraction::Apply {
-                    job_id: id,
-                    candidate_index: 0
-                }
-            )
-            .await
-            .is_err()
-    );
     // 无明确事项的零候选仍消费，不因模型返回null标题而失败。
     f.model.mode.store(10, Ordering::SeqCst);
     let greet = captured(&f, &session, "你好", chromie::types::now()).await;
@@ -1872,39 +1817,28 @@ async fn review_can_add_missing_user_evidence_but_cannot_invent_it() {
         );
         if mode == 11 {
             assert!(d["source_refs"].as_array().unwrap().contains(&json!(user)));
-            let receipt = f
-                .store
-                .apply_extraction_revision(
-                    f.space,
-                    chromie::extraction::Apply {
-                        job_id: id,
-                        candidate_index: 0,
-                    },
-                )
-                .await
-                .unwrap();
-            assert_eq!(receipt["revision"], 2);
+            assert_eq!(d["receipt"]["revision"], 2);
         }
     }
 }
 
 #[tokio::test]
-#[ignore = "需要隔离 MySQL；明确更正自动应用且旧草案不能覆盖新版本"]
-async fn explicit_changes_apply_once_and_supersede_old_proposals() {
+#[ignore = "需要隔离 MySQL；自主修订可幂等，旧消息不能覆盖更新的人工决定"]
+async fn autonomous_revision_is_idempotent_and_respects_newer_manual_decision() {
     let f = fixture().await;
-    save(&f, "fictional-explicit-maintenance").await;
+    save(&f, "fictional-autonomous-replay").await;
     let target = memory(&f).await;
     *f.model.target.lock().unwrap() = Some(target);
     let event = captured(
         &f,
-        "explicit-maintenance",
-        "数据库检查以后明确改为周五",
+        "autonomous-replay",
+        "用户确认今后每周五检查数据库。",
         chromie::types::now(),
     )
     .await;
+    f.model.mode.store(7, Ordering::SeqCst);
     let mut ids = vec![];
-    for mode in [7, 14] {
-        f.model.mode.store(mode, Ordering::SeqCst);
+    for _ in 0..2 {
         let id = Uuid::now_v7();
         f.store
             .enqueue_knowledge(
@@ -1921,48 +1855,11 @@ async fn explicit_changes_apply_once_and_supersede_old_proposals() {
         finish_stage(&f).await;
         ids.push(id);
     }
-    let result = f.store.knowledge_review(f.space, ids[1]).await.unwrap();
-    assert_eq!(result["result"]["decisions"][0]["resolution"], "automatic");
-    assert_eq!(result["result"]["pending_revisions"], 0);
-    assert_eq!(
-        f.store.knowledge_review(f.space, ids[0]).await.unwrap()["result"]["decisions"][0]["resolution"],
-        "superseded"
-    );
-    assert!(
-        f.store
-            .apply_extraction_revision(
-                f.space,
-                chromie::extraction::Apply {
-                    job_id: ids[0],
-                    candidate_index: 0
-                }
-            )
-            .await
-            .is_err()
-    );
-    let receipt = f
-        .store
-        .apply_extraction_revision(
-            f.space,
-            chromie::extraction::Apply {
-                job_id: ids[1],
-                candidate_index: 0,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(receipt["revision"], 2);
-    let read = f
-        .store
-        .get(
-            f.space,
-            serde_json::from_value(json!({"memory_id":target,"max_chars":8000})).unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(read["pending_revisions"], 0);
-    assert!(read["content"].as_str().unwrap().contains("周五"));
-    // 人工更正保留旧来源也是正常操作；之前的消息不能再次覆盖新的人工决定。
+    let first = f.store.knowledge_review(f.space, ids[0]).await.unwrap();
+    assert_eq!(first["result"]["decisions"][0]["resolution"], "automatic");
+    assert_eq!(first["result"]["decisions"][0]["receipt"]["revision"], 2);
+    let repeated = f.store.knowledge_review(f.space, ids[1]).await.unwrap();
+    assert_eq!(repeated["result"]["decisions"][0]["action"], "skip");
     f.store
         .correct(
             f.space,
@@ -1970,7 +1867,7 @@ async fn explicit_changes_apply_once_and_supersede_old_proposals() {
                 memory_id: target,
                 expected_revision: 2,
                 request_id: Uuid::now_v7(),
-                reason: "人工确认改为周一".into(),
+                reason: "新的人工决定".into(),
                 content: Some("虚构数据库检查：人工确认改为周一。".into()),
                 scope: None,
                 source_refs: None,
@@ -1980,40 +1877,6 @@ async fn explicit_changes_apply_once_and_supersede_old_proposals() {
         )
         .await
         .unwrap();
-    let replay = Uuid::now_v7();
-    f.store
-        .enqueue_knowledge(
-            f.space,
-            Queue {
-                request_id: replay,
-                kind: JobKind::Extract,
-                memory_ids: vec![],
-                event_ids: vec![event],
-            },
-        )
-        .await
-        .unwrap();
-    finish_stage(&f).await;
-    let result = f.store.knowledge_review(f.space, replay).await.unwrap();
-    assert_eq!(result["result"]["decisions"][0]["applied"], false);
-    assert_eq!(result["result"]["pending_revisions"], 1);
-}
-
-#[tokio::test]
-#[ignore = "需要隔离 MySQL；确认一个方案不能复活同任务中其余旧方案"]
-async fn confirming_one_proposal_expires_other_proposals_in_the_same_job() {
-    let f = fixture().await;
-    save(&f, "fictional-proposal-convergence").await;
-    let target = memory(&f).await;
-    *f.model.target.lock().unwrap() = Some(target);
-    let event = captured(
-        &f,
-        "proposal-convergence",
-        "讨论数据库检查改为周五",
-        chromie::types::now(),
-    )
-    .await;
-    f.model.mode.store(21, Ordering::SeqCst);
     let id = Uuid::now_v7();
     f.store
         .enqueue_knowledge(
@@ -2028,35 +1891,68 @@ async fn confirming_one_proposal_expires_other_proposals_in_the_same_job() {
         .await
         .unwrap();
     finish_stage(&f).await;
-    assert_eq!(
-        f.store.knowledge_review(f.space, id).await.unwrap()["result"]["pending_revisions"],
-        2
-    );
-    f.store
-        .apply_extraction_revision(
+    let old = f.store.knowledge_review(f.space, id).await.unwrap();
+    assert_eq!(old["result"]["decisions"][0]["action"], "defer");
+    assert_eq!(old["result"]["pending_revisions"], 0);
+    let head = f
+        .store
+        .get(
             f.space,
-            chromie::extraction::Apply {
-                job_id: id,
-                candidate_index: 0,
+            serde_json::from_value(json!({"memory_id":target})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head["revision"], 3);
+    assert!(head["content"].as_str().unwrap().contains("周一"));
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；同目标的多份模型修订不能互相覆盖或生成审批"]
+async fn duplicate_target_drafts_are_deferred_without_creating_manual_work() {
+    let f = fixture().await;
+    save(&f, "fictional-duplicate-targets").await;
+    let target = memory(&f).await;
+    *f.model.target.lock().unwrap() = Some(target);
+    f.model.mode.store(21, Ordering::SeqCst);
+    let event = captured(
+        &f,
+        "duplicate-targets",
+        "用户确认每周五检查数据库。",
+        chromie::types::now(),
+    )
+    .await;
+    let id = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: id,
+                kind: JobKind::Extract,
+                memory_ids: vec![],
+                event_ids: vec![event],
             },
         )
         .await
         .unwrap();
+    finish_stage(&f).await;
     let result = f.store.knowledge_review(f.space, id).await.unwrap();
     assert_eq!(result["result"]["pending_revisions"], 0);
-    assert_eq!(result["result"]["decisions"][1]["resolution"], "superseded");
     assert!(
-        f.store
-            .apply_extraction_revision(
-                f.space,
-                chromie::extraction::Apply {
-                    job_id: id,
-                    candidate_index: 1
-                }
-            )
-            .await
-            .is_err()
+        result["result"]["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["action"] == "defer")
     );
+    let head = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(json!({"memory_id":target})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head["revision"], 1);
 }
 
 #[tokio::test]
@@ -2561,7 +2457,7 @@ async fn late_explicit_change_does_not_overwrite_newer_memory() {
         .unwrap();
     finish_stage(&f).await;
     let result = f.store.knowledge_review(f.space, id).await.unwrap();
-    assert_eq!(result["result"]["pending_revisions"], 1);
+    assert_eq!(result["result"]["pending_revisions"], 0);
     let read = f
         .store
         .get(
@@ -2571,8 +2467,8 @@ async fn late_explicit_change_does_not_overwrite_newer_memory() {
         .await
         .unwrap();
     assert_eq!(read["revision"], 1);
-    assert_eq!(read["pending_revisions"], 1);
-    assert!(read["maintenance_notice"].is_string());
+    assert_eq!(read["pending_revisions"], 0);
+    assert_eq!(result["result"]["decisions"][0]["action"], "defer");
 }
 
 #[tokio::test]
@@ -2825,8 +2721,8 @@ async fn independent_maintenance_cycles_without_new_memories_and_preserves_infli
     f.server.abort();
 }
 #[tokio::test]
-#[ignore = "需要隔离 MySQL；使用报告只生成待确认修订并复核证据"]
-async fn maintenance_proposals_require_real_feedback_and_manual_revision_confirmation() {
+#[ignore = "需要隔离 MySQL；使用报告自动维护并复核证据"]
+async fn maintenance_revisions_are_automatic_and_require_real_feedback() {
     let f = fixture().await;
     save(&f, "fictional-use-review").await;
     let note = memory(&f).await;
@@ -2845,36 +2741,15 @@ async fn maintenance_proposals_require_real_feedback_and_manual_revision_confirm
             .await
             .unwrap()
             .unwrap();
-    assert_eq!(head.current_revision, 1, "Agent 报告不能自动覆盖事实");
+    assert_eq!(head.current_revision, 2, "AI 核对实际报告后自动维护");
     let review = f.store.knowledge_review(f.space, id).await.unwrap();
-    assert_eq!(review["result"]["pending_revisions"], 1);
+    assert_eq!(review["result"]["pending_revisions"], 0);
     assert_eq!(
         review["result"]["decisions"][0]["evidence_details"][0]["role"],
         "agent_reported"
     );
-    let input = chromie::extraction::Apply {
-        job_id: id,
-        candidate_index: 0,
-    };
-    let receipt = f
-        .store
-        .apply_extraction_revision(f.space, input)
-        .await
-        .unwrap();
-    assert_eq!(receipt["revision"], 2);
-    assert_eq!(
-        f.store
-            .apply_extraction_revision(
-                f.space,
-                chromie::extraction::Apply {
-                    job_id: id,
-                    candidate_index: 0
-                }
-            )
-            .await
-            .unwrap(),
-        receipt
-    );
+    assert_eq!(review["result"]["decisions"][0]["resolution"], "automatic");
+    assert_eq!(review["result"]["decisions"][0]["receipt"]["revision"], 2);
     report_problem(&f, note).await;
     maintain_due(&f).await;
     f.model.mode.store(23, Ordering::SeqCst);

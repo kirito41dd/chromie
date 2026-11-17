@@ -37,11 +37,10 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
                 }
             }
         });
-        launch("review", None);
+        launch();
     });
     ui.on_extraction_close(clear);
-    ui.on_extraction_refresh(|| launch("review", None));
-    ui.on_extraction_apply(|index| launch("apply-revision", Some(index)));
+    ui.on_extraction_refresh(launch);
 }
 pub(crate) fn clear() {
     CONTROLLER.with_borrow_mut(|c| {
@@ -58,7 +57,8 @@ pub(crate) fn clear() {
         }
     });
 }
-fn launch(operation: &str, index: Option<i32>) {
+fn launch() {
+    let operation = "review";
     CONTROLLER.with_borrow_mut(|c| {
         if let Some(c) = c {
             let Some(ui) = c.ui.upgrade() else {
@@ -73,11 +73,7 @@ fn launch(operation: &str, index: Option<i32>) {
             }
             ui.set_extraction_busy(true);
             ui.set_extraction_error("".into());
-            let payload = if let Some(index) = index {
-                json!({"job_id":c.job,"candidate_index":index})
-            } else {
-                json!({"job_id":c.job})
-            };
+            let payload = json!({"job_id":c.job});
             send(
                 &c.session.borrow().space,
                 operation,
@@ -88,7 +84,7 @@ fn launch(operation: &str, index: Option<i32>) {
     });
 }
 pub(crate) fn jobs(ui: &Dashboard, rows: &[Value]) {
-    let sorted = crate::memory::pending_first(rows);
+    let sorted = crate::memory::recent_jobs(rows);
     let items = sorted
         .iter()
         .copied()
@@ -100,7 +96,7 @@ pub(crate) fn jobs(ui: &Dashboard, rows: &[Value]) {
                 id: j["job_id"].as_str().unwrap_or_default().into(),
                 time: format_time(j["created_at"].as_str().unwrap_or_default()).into(),
                 label: format!(
-                    "新增 {} · 待修订 {} · 已采用 {} · 跳过 {} · 暂缓 {}",
+                    "新增 {} · 待 AI 复核 {} · 修订 {} · 跳过 {} · 暂缓 {}",
                     counts["create"],
                     j["result"]["pending_revisions"].as_u64().unwrap_or(0),
                     counts["applied"].as_u64().unwrap_or(0),
@@ -122,7 +118,7 @@ pub(crate) fn jobs(ui: &Dashboard, rows: &[Value]) {
             id: j["job_id"].as_str().unwrap_or_default().into(),
             time: format_time(j["created_at"].as_str().unwrap_or_default()).into(),
             label: format!(
-                "{} · 主题 {} · 合并 {} · 待修订 {}",
+                "{} · 主题 {} · 合并 {} · 自动修订 {} · 暂缓 {}",
                 if j["kind"] == "maintain" {
                     "定期维护"
                 } else {
@@ -130,7 +126,8 @@ pub(crate) fn jobs(ui: &Dashboard, rows: &[Value]) {
                 },
                 j["result"]["topic_changes"].as_array().map_or(0, Vec::len),
                 j["result"]["merged_topics"].as_array().map_or(0, Vec::len),
-                j["result"]["pending_revisions"].as_u64().unwrap_or(0)
+                j["result"]["counts"]["applied"].as_u64().unwrap_or(0),
+                j["result"]["counts"]["defer"].as_u64().unwrap_or(0)
             )
             .into(),
         })
@@ -138,7 +135,6 @@ pub(crate) fn jobs(ui: &Dashboard, rows: &[Value]) {
     ui.set_maintenance_jobs(Rc::new(VecModel::from(maintenance)).into());
 }
 pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str) {
-    let mut refresh = false;
     let mut expired = false;
     CONTROLLER.with_borrow_mut(|c| {
         if let Some(c) = c {
@@ -166,17 +162,15 @@ pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str)
                 );
                 return;
             }
-            if operation == "apply-revision" {
-                refresh = true;
-                return;
-            }
             let result = &value["result"];
             ui.set_extraction_note(
-                if value["state"] == "done" {
+                if result["detail_expired"] == true {
+                    "此记录的详细正文已超过保留范围，任务状态和统计仍保留。"
+                } else if value["state"] == "done" {
                     if result["retrieval_partial"] == true {
-                        "已完成。相关记忆检索范围有限；修订确认时仍会检查当前版本。"
+                        "已自动处理。相关记忆检索范围有限；未通过证据校验的内容保持现状。"
                     } else {
-                        "已完成。主题已自动更新；普通记忆建议确认后写入并保留历史。使用报告仅代表 Agent 观察。"
+                        "已自动处理。修订和主题更新已写入；证据不足的事项保留现状。"
                     }
                 } else {
                     "尚未完成核对；请稍后刷新。"
@@ -194,9 +188,12 @@ pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str)
                     ) {
                         (_, Some("superseded")) => "方案已过期",
                         (_, Some("automatic")) => "已自动修订",
-                        (_, Some("confirmed")) => "已确认修订",
+                        (_, Some("confirmed")) => "已修订",
+                        (_, Some("rechecking")) => "AI 复核中",
+                        (_, Some("rechecked")) => "AI 已重新核对",
+                        (_, Some("deferred")) => "已暂缓",
                         ("create", _) => "已新增",
-                        ("propose_revision", _) => "建议修订",
+                        ("propose_revision", _) => "历史建议（等待 AI 复核）",
                         ("skip", _) => "已跳过",
                         _ => "暂缓",
                     };
@@ -218,17 +215,22 @@ pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str)
                                         "助手 · {}",
                                         e["occurred_at"].as_str().unwrap_or_default()
                                     ),
-                                    Some("agent_reported") => format!("Agent 使用报告（非独立验证） · {}",e["occurred_at"].as_str().unwrap_or_default()),
+                                    Some("agent_reported") => format!(
+                                        "Agent 使用报告（非独立验证） · {}",
+                                        e["occurred_at"].as_str().unwrap_or_default()
+                                    ),
                                     _ => "来源消息".to_owned(),
                                 },
                                 e["quote"].as_str().unwrap_or_default(),
-                                e["reference"].as_str().or_else(||e["event_id"].as_str()).unwrap_or_default()
+                                e["reference"]
+                                    .as_str()
+                                    .or_else(|| e["event_id"].as_str())
+                                    .unwrap_or_default()
                             )
                         })
                         .collect::<Vec<_>>()
                         .join("\n\n");
                     ExtractionDecision {
-                        index: d["candidate_index"].as_i64().unwrap_or(0) as i32,
                         action: action.into(),
                         reason: d["reason"].as_str().unwrap_or_default().into(),
                         body: d["content"].as_str().unwrap_or_default().into(),
@@ -238,32 +240,51 @@ pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str)
                             .as_str()
                             .unwrap_or_default()
                             .into(),
-                        can_apply: d["action"] == "propose_revision"
-                            && d["applied"] != true
-                            && d["resolution"] != "superseded",
                         applied: d["applied"] == true,
                     }
                 })
                 .collect::<Vec<_>>();
             for change in result["topic_changes"].as_array().into_iter().flatten() {
-                rows.push(ExtractionDecision{index:-1,action:if change["action"]=="created"{"已新增主题".into()}else{"已更新主题".into()},body:change["title"].as_str().unwrap_or_default().into(),reason:format!("主题 ID：{}",change["memory_id"].as_str().unwrap_or_default()).into(),..Default::default()});
+                rows.push(ExtractionDecision {
+                    action: if change["action"] == "created" {
+                        "已新增主题".into()
+                    } else {
+                        "已更新主题".into()
+                    },
+                    body: change["title"].as_str().unwrap_or_default().into(),
+                    reason: format!(
+                        "主题 ID：{}",
+                        change["memory_id"].as_str().unwrap_or_default()
+                    )
+                    .into(),
+                    ..Default::default()
+                });
             }
             for merge in result["merged_topics"].as_array().into_iter().flatten() {
-                rows.push(ExtractionDecision{index:-1,action:"已合并主题".into(),body:merge["title"].as_str().unwrap_or_default().into(),reason:format!("{} → {}；旧入口仍可跳转，历史保留。",merge["from"].as_str().unwrap_or_default(),merge["to"].as_str().unwrap_or_default()).into(),..Default::default()});
+                rows.push(ExtractionDecision {
+                    action: "已合并主题".into(),
+                    body: merge["title"].as_str().unwrap_or_default().into(),
+                    reason: format!(
+                        "{} → {}；旧入口仍可跳转，历史保留。",
+                        merge["from"].as_str().unwrap_or_default(),
+                        merge["to"].as_str().unwrap_or_default()
+                    )
+                    .into(),
+                    ..Default::default()
+                });
             }
             for conflict in result["conflicts"].as_array().into_iter().flatten() {
-                rows.push(ExtractionDecision{index:-1,action:"需要核对".into(),reason:conflict["reason"].as_str().unwrap_or_default().into(),..Default::default()});
+                rows.push(ExtractionDecision {
+                    action: "保留现状".into(),
+                    reason: conflict["reason"].as_str().unwrap_or_default().into(),
+                    ..Default::default()
+                });
             }
             ui.set_extraction_decisions(Rc::new(VecModel::from(rows)).into());
         }
     });
     if expired {
         crate::browser::end_session();
-    }
-    if refresh {
-        launch("review", None);
-        crate::knowledge_browser::load(true);
-        crate::text_browser::refresh_memories();
     }
 }
 

@@ -46,6 +46,16 @@ pub async fn serve(
         .map_err(|_| Error::invalid("无法绑定监听地址"))?;
     let vector_store = store.clone();
     let knowledge_store = store.clone();
+    let retention_store = store.clone();
+    let retention_worker = tokio::spawn(async move {
+        let mut timer = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            timer.tick().await;
+            if let Err(error) = retention_store.compact_history().await {
+                tracing::warn!(code = error.code, "历史详情暂未压缩，将稍后重试");
+            }
+        }
+    });
     let knowledge_worker = tokio::spawn(async move {
         let mut timer = tokio::time::interval(Duration::from_secs(2));
         loop {
@@ -83,8 +93,10 @@ pub async fn serve(
     worker.abort();
     vector_worker.abort();
     knowledge_worker.abort();
+    retention_worker.abort();
     let _ = worker.await;
     let _ = vector_worker.await;
     let _ = knowledge_worker.await;
+    let _ = retention_worker.await;
     result.map_err(|_| Error::unavailable())
 }

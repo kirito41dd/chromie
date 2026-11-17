@@ -146,7 +146,32 @@ impl Store {
             ));
         }
         let mut ids = Vec::new();
-        let proposals = Self::maintenance_proposals(&snapshot, parsed.revisions)?;
+        let mut proposals = Self::maintenance_proposals(&snapshot, parsed.revisions)?;
+        for proposal in &mut proposals {
+            let replacement = serde_json::from_value(proposal["replacement"].clone())
+                .map_err(|_| Error::unavailable())?;
+            let receipt = self
+                .apply_replacement_tx(
+                    &tx,
+                    space,
+                    replacement,
+                    &[],
+                    format!(
+                        "后台 LLM 使用报告维护：{}",
+                        proposal["reason"].as_str().unwrap_or_default()
+                    ),
+                )
+                .await?;
+            let id: Uuid = serde_json::from_value(receipt["memory_id"].clone())
+                .map_err(|_| Error::unavailable())?;
+            let revision: i32 = serde_json::from_value(receipt["revision"].clone())
+                .map_err(|_| Error::unavailable())?;
+            Self::mark_automatic_revision(&tx, space, id, revision, uuid_from_bytes(&row.id)?)
+                .await?;
+            proposal["applied"] = json!(true);
+            proposal["resolution"] = json!("automatic");
+            proposal["receipt"] = receipt;
+        }
         let mut edited = HashSet::new();
         let mut titles = HashSet::new();
         let mut merged_topics = Vec::new();
@@ -376,9 +401,17 @@ impl Store {
         result["merged_topics"] = json!(merged_topics);
         result["topic_changes"] = json!(topic_changes);
         if snapshot.kind == JobKind::Maintain {
-            result["pending_revisions"] = json!(proposals.len());
+            result["pending_revisions"] = json!(0);
             result["decisions"] = json!(proposals);
         }
+        Self::finish_pending_review(
+            &tx,
+            space,
+            &snapshot,
+            uuid_from_bytes(&row.id)?,
+            Some("rechecked"),
+        )
+        .await?;
         let mut active = current.into_active_model();
         active.state = Set("done".into());
         active.payload = Set(None);
@@ -492,6 +525,18 @@ impl Store {
             .copied()
             .unwrap_or(300);
         if stale || !retry {
+            if let Some(payload) = &current.payload {
+                let snapshot: Snapshot =
+                    serde_json::from_value(payload.clone()).map_err(|_| Error::unavailable())?;
+                Self::finish_pending_review(
+                    &tx,
+                    SpaceId(uuid_from_bytes(&current.space_id)?),
+                    &snapshot,
+                    uuid_from_bytes(&current.id)?,
+                    if stale { None } else { Some("deferred") },
+                )
+                .await?;
+            }
             Self::finish_organization(
                 &tx,
                 &current,

@@ -195,6 +195,7 @@ impl Store {
         row.updated_at = Set(now());
         row.update(&tx).await?;
         // 配置快照随设置变化失效；保留已完成修订，不让暂停造成历史重跑。
+        Self::release_pending_reviews(&tx).await?;
         jobs::Entity::update_many()
             .col_expr(jobs::Column::State, Expr::value("stale"))
             .col_expr(jobs::Column::Payload, Expr::value(Option::<Value>::None))

@@ -299,8 +299,8 @@ window.chromieRequestId = () => {
 const activeTextModel = new Map();
 window.chromieCancelTextModel = () => { for (const controller of activeTextModel.values()) controller.abort(); activeTextModel.clear(); };
 window.chromieTextModel = async (space, operation, payload, generation) => {
-  if (typeof space !== "string" || !/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["read", "reload", "save", "test", "disable", "jobs", "queue", "review", "apply-revision"].includes(operation)) { receive_text_model(operation, generation, 400, ""); return; }
-  const channel = ["jobs", "queue"].includes(operation) ? "jobs" : ["review", "apply-revision"].includes(operation) ? "review" : "config";
+  if (typeof space !== "string" || !/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["read", "reload", "save", "test", "disable", "jobs", "queue", "review"].includes(operation)) { receive_text_model(operation, generation, 400, ""); return; }
+  const channel = ["jobs", "queue"].includes(operation) ? "jobs" : operation === "review" ? "review" : "config";
   activeTextModel.get(channel)?.abort(); const controller = new AbortController(); activeTextModel.set(channel, controller);
   const timeout = setTimeout(() => controller.abort(), 150000);
   try {

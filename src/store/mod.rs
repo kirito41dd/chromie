@@ -1,4 +1,5 @@
 mod agents;
+mod autonomous;
 mod capabilities;
 mod conversations;
 mod embedding_batch_worker;
@@ -22,6 +23,7 @@ mod providers;
 mod read;
 mod recall;
 mod recall_usage;
+mod retention;
 mod secret_audit;
 mod secret_contracts;
 mod secrets;

@@ -1,41 +1,35 @@
-//! 自动更正的准入只依赖本批证据和旧来源时序；模型不能指定跳过这些条件。
+//! AI 自主修订的发布护栏：真实来源、来源时序及人工新决定仍由服务校验。
 use super::knowledge_jobs::Snapshot;
 use super::*;
 use crate::{
     entity::{memory_sources, source_events},
-    extraction::{Evidence, Replacement},
+    extraction::{Category, Evidence, Replacement},
 };
 
 impl Store {
-    pub(super) async fn explicit_change_is_current(
+    pub(super) async fn autonomous_change_is_current(
         tx: &DatabaseTransaction,
         space: SpaceId,
         snapshot: &Snapshot,
         replacement: &Replacement,
-        proof: &Evidence,
         source_refs: &[Uuid],
+        evidence: &[Evidence],
+        category: Category,
     ) -> Result<bool> {
+        // 候选和核对阶段已逐字校验引文；在其实际来源中取最新依据，不能用处理时间代替。
         let Some(event) = snapshot
             .events
             .iter()
-            .find(|e| e.event_id == proof.event_id)
+            .filter(|e| evidence.iter().any(|proof| proof.event_id == e.event_id))
+            .filter(|e| {
+                !matches!(category, Category::Preference | Category::Decision) || e.role == "user"
+            })
+            .max_by_key(|e| (&e.occurred_at, e.event_id))
         else {
             return Ok(false);
         };
-        if event.role != "user"
-            || proof.quote.trim().is_empty()
-            || proof.quote.len() > 1000
-            || !event.body.contains(proof.quote.as_str())
-            || snapshot
-                .automatic
-                .as_ref()
-                .and_then(|a| a.conversation.as_ref())
-                .is_some_and(|c| !c.work_event_ids.contains(&proof.event_id))
-        {
-            return Ok(false);
-        }
         let basis =
-            source_events::Entity::find_by_id((space.bytes(), proof.event_id.as_bytes().to_vec()))
+            source_events::Entity::find_by_id((space.bytes(), event.event_id.as_bytes().to_vec()))
                 .one(tx)
                 .await?
                 .ok_or_else(Error::missing)?;

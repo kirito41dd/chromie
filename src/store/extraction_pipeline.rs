@@ -144,7 +144,10 @@ impl Store {
         Ok(())
     }
     /// 引文只能逐字摘自已读来源；偏好必须有用户证据，不能把助手提议提升为用户选择。
-    fn candidate_issue(snapshot: &Snapshot, candidate: &Candidate) -> Option<&'static str> {
+    pub(super) fn candidate_issue(
+        snapshot: &Snapshot,
+        candidate: &Candidate,
+    ) -> Option<&'static str> {
         if candidate.source_refs.is_empty() || candidate.evidence.is_empty() {
             return Some("缺少可核对来源");
         }
@@ -181,14 +184,7 @@ impl Store {
         }) {
             return Some("引文与实际消息不匹配");
         }
-        if candidate.category == Category::Preference
-            && !candidate
-                .evidence
-                .iter()
-                .any(|e| events.get(&e.event_id).is_some_and(|s| s.role == "user"))
-        {
-            return Some("偏好缺少用户原话依据");
-        }
+        // 角色约束在合并核对阶段的补充引文后统一检查，允许补全真实用户依据。
         None
     }
     pub(super) async fn publish_extraction(
@@ -220,6 +216,19 @@ impl Store {
         let mut records = vec![];
         for mut d in decisions {
             let candidate = &review.candidates[d.candidate_index];
+            if let Some(proof) = &d.explicit_change
+                && (proof.quote.trim().is_empty()
+                    || proof.quote.len() > 1000
+                    || snapshot
+                        .events
+                        .iter()
+                        .find(|e| e.event_id == proof.event_id)
+                        .is_none_or(|e| e.role != "user" || !e.body.contains(&proof.quote)))
+            {
+                d.action = Action::Defer;
+                d.reason = "额外更正引文无法核对，保留当前记忆".into();
+                d.replacement = None;
+            }
             let content = d.content.as_deref().unwrap_or(&candidate.content);
             crate::types::bounded(content, 16000)?;
             if let Some(issue) = &d.quality_issue {
@@ -298,9 +307,15 @@ impl Store {
                     .iter()
                     .any(|s| s.event_id == e.event_id && s.role == "user")
             });
-            if d.action == Action::ProposeRevision && !user_evidence {
+            if matches!(d.action, Action::Create | Action::ProposeRevision)
+                && matches!(
+                    candidate.category,
+                    Category::Preference | Category::Decision
+                )
+                && !user_evidence
+            {
                 d.action = Action::Defer;
-                d.reason = "修订缺少用户明确变更的证据".into();
+                d.reason = "偏好或用户决定缺少用户原话，保留当前记忆".into();
                 d.replacement = None;
             }
             if d.action != Action::ProposeRevision && d.replacement.is_some() {
@@ -371,41 +386,50 @@ impl Store {
                 }
             }
             if d.action == Action::ProposeRevision
-                && let Some(proof) = &d.explicit_change
                 && let Some(replacement) = &d.replacement
-                && targets.get(&replacement.memory_id) == Some(&1)
-                && Self::explicit_change_is_current(
-                    &tx,
-                    space,
-                    snapshot,
-                    replacement,
-                    proof,
-                    &source_refs,
-                )
-                .await?
             {
-                receipt = Some(
-                    self.apply_replacement_tx(
+                if targets.get(&replacement.memory_id) == Some(&1)
+                    && !crate::extraction::incomplete_method(&replacement.content)
+                    && Self::autonomous_change_is_current(
                         &tx,
                         space,
-                        replacement.clone(),
+                        snapshot,
+                        replacement,
                         &source_refs,
-                        format!("后台按用户明确更正自动修订：{}", d.reason),
+                        &evidence,
+                        candidate.category,
                     )
-                    .await?,
-                );
-                let version: i32 = serde_json::from_value(
-                    receipt.as_ref().ok_or_else(Error::unavailable)?["revision"].clone(),
-                )
-                .map_err(|_| Error::unavailable())?;
-                Self::mark_automatic_revision(
-                    &tx,
-                    space,
-                    replacement.memory_id,
-                    version,
-                    uuid_from_bytes(&row.id)?,
-                )
-                .await?;
+                    .await?
+                {
+                    receipt = Some(
+                        self.apply_replacement_tx(
+                            &tx,
+                            space,
+                            replacement.clone(),
+                            &source_refs,
+                            format!("后台 LLM 自主整理：{}", d.reason),
+                        )
+                        .await?,
+                    );
+                    let version: i32 = serde_json::from_value(
+                        receipt.as_ref().ok_or_else(Error::unavailable)?["revision"].clone(),
+                    )
+                    .map_err(|_| Error::unavailable())?;
+                    Self::mark_automatic_revision(
+                        &tx,
+                        space,
+                        replacement.memory_id,
+                        version,
+                        uuid_from_bytes(&row.id)?,
+                    )
+                    .await?;
+                } else {
+                    d.action = Action::Defer;
+                    d.reason =
+                        "依据时序、目标唯一性或来源容量未通过校验，保留当前记忆，等待后续证据"
+                            .into();
+                    d.replacement = None;
+                }
             }
             let evidence_details = evidence.iter().map(|proof| {
                 let source = snapshot.events.iter().find(|s| s.event_id == proof.event_id);
@@ -429,6 +453,14 @@ impl Store {
                 .count()
         );
         result["retrieval_partial"] = json!(review.retrieval_partial);
+        Self::finish_pending_review(
+            &tx,
+            space,
+            snapshot,
+            uuid_from_bytes(&row.id)?,
+            Some("rechecked"),
+        )
+        .await?;
         if let Some(map) = result.as_object_mut() {
             map.remove("error");
         }

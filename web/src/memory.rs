@@ -59,11 +59,24 @@ impl Usage {
     }
 }
 
-/// 后端补回的旧待确认项必须优先保留，不能被展示上限再次丢弃。
-pub(crate) fn pending_first(rows: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+/// 优先展示最近处理结果；旧历史建议继续由后台复核，不再占据审批置顶位置。
+pub(crate) fn recent_jobs(rows: &[serde_json::Value]) -> Vec<&serde_json::Value> {
     let mut sorted = rows.iter().collect::<Vec<_>>();
-    sorted.sort_by_key(|j| j["result"]["pending_revisions"].as_u64().unwrap_or(0) == 0);
+    sorted.sort_by(|a, b| {
+        job_time(b)
+            .cmp(&job_time(a))
+            .then_with(|| b["job_id"].as_str().cmp(&a["job_id"].as_str()))
+    });
     sorted
+}
+
+fn job_time(row: &serde_json::Value) -> Option<time::PrimitiveDateTime> {
+    // 后端 PrimitiveDateTime 的小时不补零，不能直接用字符串将 9 点排在 10 点之后。
+    let format = time::format_description::parse_borrowed::<3>(
+        "[year]-[month]-[day] [hour padding:none]:[minute]:[second].[subsecond]",
+    )
+    .ok()?;
+    time::PrimitiveDateTime::parse(row["created_at"].as_str()?, &format).ok()
 }
 
 pub fn order(index: i32) -> &'static str {
@@ -150,16 +163,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_pending_maintenance_survives_twenty_recent_results() {
+    fn recent_automatic_results_are_not_displaced_by_old_approval_backlog() {
         let mut rows = (0..20)
-            .map(|i| serde_json::json!({"job_id":i,"result":{"pending_revisions":0}}))
+            .map(|i| serde_json::json!({"job_id":i,"created_at":format!("2026-11-17 10:10:{i:02}.0"),"result":{"pending_revisions":0}}))
             .collect::<Vec<_>>();
-        rows.push(serde_json::json!({"job_id":"old-pending","result":{"pending_revisions":1}}));
-        let shown = pending_first(&rows)
-            .into_iter()
-            .take(20)
-            .collect::<Vec<_>>();
-        assert_eq!(shown[0]["job_id"], "old-pending");
+        rows.push(serde_json::json!({"job_id":"old-pending","created_at":"2026-11-17 9:10:00.0","result":{"pending_revisions":1}}));
+        let shown = recent_jobs(&rows).into_iter().take(20).collect::<Vec<_>>();
+        assert_eq!(shown[0]["job_id"], 19);
+        assert!(shown.iter().all(|j| j["job_id"] != "old-pending"));
         assert_eq!(shown.len(), 20);
     }
 

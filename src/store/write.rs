@@ -387,6 +387,7 @@ impl Store {
         active.update(tx).await?;
         Self::schedule(tx, space, input.memory_id, revision).await?;
         Self::supersede_proposals(tx, space, input.memory_id, revision).await?;
+        Self::compact_memory_history(tx, space, input.memory_id, revision).await?;
         self.receipt(
             tx,
             space,

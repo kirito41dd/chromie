@@ -316,7 +316,6 @@ export component Dashboard inherits Window {
     in property <string> extraction-error;
     callback extraction-read(string);
     callback extraction-close;
-    callback extraction-apply(int);
     callback extraction-refresh;
     callback extraction-focus-close;
     extraction-focus-close => { extraction-reader.focus-close(); }
@@ -689,7 +688,7 @@ export component Dashboard inherits Window {
                         jobs: root.extraction-jobs; open(id) => { root.extraction-read(id); }
                     }
                     if root.maintenance-jobs.length > 0 && !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: ExtractionResults {
-                        title: "记忆维护"; description: "整理主题，并根据使用反馈提出修订建议。普通记忆的修订需确认。";
+                        title: "记忆维护"; description: "AI 根据使用反馈维护记忆并整理主题，证据不足时保留现状。";
                         jobs: root.maintenance-jobs; open(id) => { root.extraction-read(id); }
                     }
                     if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: MemoryColumns {
@@ -915,7 +914,7 @@ export component Dashboard inherits Window {
     extraction-reader := ExtractionReader {
         visible: root.extraction-open;
         decisions: root.extraction-decisions; note: root.extraction-note; error: root.extraction-error; busy: root.extraction-busy;
-        close => { root.extraction-close(); } apply(index) => { root.extraction-apply(index); } refresh => { root.extraction-refresh(); }
+        close => { root.extraction-close(); } refresh => { root.extraction-refresh(); }
     }
 
 }

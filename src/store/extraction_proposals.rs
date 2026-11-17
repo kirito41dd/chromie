@@ -1,8 +1,8 @@
-//! 自动更正与人工确认共用修订事务；过期方案不允许覆盖新内容，来源和历史不丢失。
+//! 自主修订共用原子写入事务；历史建议的生命周期与当前版本分开维护。
 use super::*;
 use crate::{
-    entity::{knowledge_jobs as jobs, memory_sources, source_events},
-    extraction::{Apply, Evidence, Replacement},
+    entity::{knowledge_jobs as jobs, memory_sources},
+    extraction::Replacement,
     knowledge::MemoryType,
     types::Correct,
 };
@@ -21,114 +21,6 @@ impl Store {
         }
         view["result"] = result;
         Ok(view)
-    }
-
-    pub async fn apply_extraction_revision(&self, space: SpaceId, input: Apply) -> Result<Value> {
-        let tx = self.begin(space).await?;
-        let row = jobs::Entity::find_by_id((space.bytes(), input.job_id.as_bytes().to_vec()))
-            .lock_exclusive()
-            .one(&tx)
-            .await?
-            .ok_or_else(Error::missing)?;
-        if !["extract", "maintain"].contains(&row.kind.as_str()) || row.state != "done" {
-            return Err(Error::invalid("此任务没有可确认的修订"));
-        }
-        let mut result = row.result.clone().ok_or_else(Error::missing)?;
-        let decision = result["decisions"]
-            .as_array_mut()
-            .and_then(|items| {
-                items
-                    .iter_mut()
-                    .find(|d| d["candidate_index"].as_u64() == Some(input.candidate_index as u64))
-            })
-            .filter(|d| d["action"] == "propose_revision")
-            .ok_or_else(Error::missing)?;
-        // 同一方案重复确认只返回原回执；不再次生成修订。
-        if decision["applied"] == true {
-            return Ok(decision["receipt"].clone());
-        }
-        if decision["resolution"] == "superseded" {
-            return Err(Error::conflict("proposal_superseded"));
-        }
-        let replacement: Replacement = serde_json::from_value(decision["replacement"].clone())
-            .map_err(|_| Error::unavailable())?;
-        let evidence: Vec<Evidence> = serde_json::from_value(decision["evidence"].clone())
-            .map_err(|_| Error::unavailable())?;
-        let source_refs: Vec<Uuid> = serde_json::from_value(decision["source_refs"].clone())
-            .map_err(|_| Error::unavailable())?;
-        let mut user_evidence = false;
-        for proof in evidence {
-            let source = source_events::Entity::find_by_id((
-                space.bytes(),
-                proof.event_id.as_bytes().to_vec(),
-            ))
-            .one(&tx)
-            .await?
-            .ok_or_else(Error::missing)?;
-            if source.forgotten_at.is_some()
-                || source
-                    .body
-                    .as_ref()
-                    .is_none_or(|body| !body.contains(proof.quote.as_str()))
-            {
-                return Err(Error::conflict("knowledge_input_changed"));
-            }
-            user_evidence |= source.role == "user";
-        }
-        if row.kind == "maintain" {
-            let proof: Vec<super::use_reports::UseEvidence> =
-                serde_json::from_value(decision["usage_evidence"].clone())
-                    .map_err(|_| Error::unavailable())?;
-            if proof.is_empty()
-                || proof.len() > 10
-                || proof.iter().any(|e| {
-                    e.memory_id != replacement.memory_id
-                        || e.revision != replacement.expected_revision
-                        || !matches!(
-                            e.outcome,
-                            crate::recall_usage::UseOutcome::ContentOutdated
-                                | crate::recall_usage::UseOutcome::EnvironmentBlocked
-                        )
-                })
-            {
-                return Err(Error::invalid("维护修订缺少对应版本的实际问题报告"));
-            }
-            Self::check_usage_evidence(&tx, space, &proof).await?;
-        } else if !user_evidence {
-            return Err(Error::invalid("修订缺少用户证据"));
-        }
-        let reason = decision["reason"]
-            .as_str()
-            .unwrap_or("确认对话提炼的修订方案")
-            .to_owned();
-        let receipt = self
-            .apply_replacement_tx(&tx, space, replacement, &source_refs, reason)
-            .await?;
-        // correct 已将同一任务内的其他旧方案作废；重读后补回执，不能用旧快照复活它们。
-        let mut result =
-            jobs::Entity::find_by_id((space.bytes(), input.job_id.as_bytes().to_vec()))
-                .one(&tx)
-                .await?
-                .and_then(|r| r.result)
-                .ok_or_else(Error::missing)?;
-        let decision = result["decisions"]
-            .as_array_mut()
-            .and_then(|items| {
-                items
-                    .iter_mut()
-                    .find(|d| d["candidate_index"].as_u64() == Some(input.candidate_index as u64))
-            })
-            .ok_or_else(Error::missing)?;
-        decision["applied"] = json!(true);
-        decision["resolution"] = json!("confirmed");
-        decision["receipt"] = receipt.clone();
-        result["pending_revisions"] = json!(Self::pending_proposal_count(&result));
-        let mut active = row.into_active_model();
-        active.result = Set(Some(result));
-        active.updated_at = Set(now());
-        active.update(&tx).await?;
-        tx.commit().await?;
-        Ok(receipt)
     }
 
     /// 调用方持空间锁并校验来源证据；此处统一维护旧来源、关系、修订和幂等回执。
@@ -164,9 +56,9 @@ impl Store {
                 refs.push(*id);
             }
         }
-        // 来源没有上限扩张：超限时保留旧修订及方案，交由人工整理，而不是静默丢弃旧依据。
+        // 来源没有上限扩张：超限时保留旧修订并暂缓，不静默丢弃旧依据。
         if refs.len() > 16 {
-            return Err(Error::invalid("修订关联来源超过16条，请先人工整理"));
+            return Err(Error::invalid("修订关联来源超过16条，保留当前正文并暂缓"));
         }
         self.correct_tx(
             tx,
@@ -194,12 +86,12 @@ impl Store {
             .filter(|d| {
                 d["action"] == "propose_revision"
                     && d["applied"] != true
-                    && d["resolution"] != "superseded"
+                    && d["resolution"].is_null()
             })
             .count()
     }
 
-    /// 只扫描仍有待确认结果的任务；JSON 路径固定，目标 ID 通过绑定参数传递。
+    /// 只扫描仍有待复核结果的任务；JSON 路径固定，目标 ID 通过绑定参数传递。
     async fn proposals_for<C: ConnectionTrait>(
         db: &C,
         space: SpaceId,
@@ -232,7 +124,7 @@ impl Store {
                         && d["replacement"]["expected_revision"] == revision
                         && d["action"] == "propose_revision"
                         && d["applied"] != true
-                        && d["resolution"] != "superseded"
+                        && d["resolution"].is_null()
                 })
                 .count();
         }

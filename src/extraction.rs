@@ -1,4 +1,4 @@
-//! 候选携带公开结论与可回查证据；明确更正与推测状态变化使用不同发布条件。
+//! 候选携带公开结论与可回查证据；AI 决定修订，服务校验发布边界。
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -58,7 +58,7 @@ pub(crate) struct Decision {
     /// 核对时可补上生成阶段遗漏的用户授权/变更原话；仍须逐字属于固定输入。
     #[serde(default)]
     pub evidence: Vec<Evidence>,
-    /// 仅指用户明确改变同一事项的原话；发布方还要验证角色、新增范围和证据时序。
+    /// 可选的用户更正原话；不作为自主整理开关，提供时仍校验真实性。
     #[serde(default)]
     pub explicit_change: Option<Evidence>,
     /// 核对可补齐来源中已有的背景或完整链接，不得改变候选含义。
@@ -79,11 +79,4 @@ pub(crate) fn incomplete_method(content: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Reviewed {
     pub decisions: Vec<Decision>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Apply {
-    pub job_id: Uuid,
-    pub candidate_index: usize,
 }

@@ -140,9 +140,14 @@ impl Store {
             0
         };
         value["pending_revisions"] = json!(pending);
+        value["content_available"] = json!(revision.content.is_some());
+        if !is_current && revision.content.is_none() {
+            value["maintenance_notice"] =
+                json!("该修订的历史正文已按有限保留策略清理，仅保留修订元数据");
+        }
         if pending > 0 {
             value["maintenance_notice"] = json!(
-                "这条记忆存在待确认的变更，当前正文可能已过时；使用前须核对新证据，不能直接沿用旧结论"
+                "AI 将重新核对这条记忆的历史建议；当前正文尚未更新，使用时请结合来源与实际情况"
             );
         }
         let first =
@@ -288,7 +293,7 @@ impl Store {
                 };
                 let mut history = Vec::new();
                 for row in rows {
-                    history.push(json!({"revision":row.revision,"content":row.content,"content_cursor":format!("{}:0",row.revision),"project_key":row.project_key,"change_reason":row.change_reason,
+                    history.push(json!({"revision":row.revision,"content_available":row.content.is_some(),"content":row.content,"content_cursor":format!("{}:0",row.revision),"project_key":row.project_key,"change_reason":row.change_reason,
                         "origin":Self::memory_origin(&self.db, space, id, row.agent_id.as_deref(), row.change_reason.as_deref()).await?}));
                 }
                 json!({"memory_id":id,"history":history,"next_cursor":next,"truncated":more})

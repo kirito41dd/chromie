@@ -44,7 +44,7 @@ test("正常和控制字符最坏转义的合法任务历史都能返回状态�
 });
 
 
-test("候选详情与任务轮询独立，确认修订仍使用同源POST", async () => {
+test("整理详情与任务轮询独立，浏览器不再提交旧的人工确认操作", async () => {
   const b=bridge();
   const review=b.window.chromieTextModel("demo","review",JSON.stringify({job_id:"01900000-0000-7000-8000-000000000000"}),1);
   const jobs=b.window.chromieTextModel("demo","jobs","{}",2);
@@ -54,7 +54,8 @@ test("候选详情与任务轮询独立，确认修订仍使用同源POST", asyn
   assert.equal(b.requests[0].options.method,"POST");
   reply(b.requests[0],{result:{decisions:[]}});reply(b.requests[1],{jobs:[]});await Promise.all([review,jobs]);
   const apply=b.window.chromieTextModel("demo","apply-revision",JSON.stringify({job_id:"01900000-0000-7000-8000-000000000000",candidate_index:0}),3);
-  assert.equal(b.requests[2].path,"/spaces/demo/knowledge/apply-revision");
-  reply(b.requests[2],{revision:2});await apply;
+  await apply;
+  assert.equal(b.requests.length,2);
   assert.equal(b.text.at(-1)[0],"apply-revision");
+  assert.equal(b.text.at(-1)[2],400);
 });

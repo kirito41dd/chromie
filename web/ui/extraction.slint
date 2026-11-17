@@ -22,11 +22,11 @@ component ExtractionJobRow inherits Rectangle {
     keyboard := FocusScope { focus-on-click: false; key-pressed(event) => { if !event.repeat && (event.text == Key.Return || event.text == " ") { root.activated(); accept } else { reject } } }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.activated(); } }
 }
-export struct ExtractionDecision { index: int, action: string, reason: string, body: string, evidence: string, previous: string, proposed: string, can-apply: bool, applied: bool }
+export struct ExtractionDecision { action: string, reason: string, body: string, evidence: string, previous: string, proposed: string, applied: bool }
 export component ExtractionResults inherits Rectangle {
     in property <[ExtractionJob]> jobs;
     in property <string> title: "消息提炼结果";
-    in property <string> description: "新结论自动保存，明确更正自动修订；其余变更查看依据后确认。";
+    in property <string> description: "AI 自动整理记忆，在这里查看更新、跳过和暂缓的原因。详细结果保留最近 100 条、最长 30 天。";
     callback open(string);
     private property <bool> expanded: false;
     height: layout.preferred-height;
@@ -55,7 +55,6 @@ export component ExtractionReader inherits Rectangle {
     in property <string> error;
     in property <bool> busy;
     callback close;
-    callback apply(int);
     callback refresh;
     callback focus-close;
     focus-close => { close-button.focus(); }
@@ -90,17 +89,16 @@ export component ExtractionReader inherits Rectangle {
                             height: content.preferred-height; border-radius: 10px; border-width: 1px; border-color: Theme.border;
                             content := VerticalLayout {
                                 padding: 16px; spacing: 10px;
-                                Text { text: row.action; color: row.can-apply ? Theme.accent : #138578; font-size: 14px; font-weight: 600; }
+                                Text { text: row.action; color: row.applied ? Theme.green : Theme.secondary; font-size: 14px; font-weight: 600; }
                                 if row.body != "" && row.proposed == "": SelectableText { text: row.body; text-color: Theme.ink; font-size: 14px; }
                                 SelectableText { text: row.reason; text-color: Theme.secondary; font-size: 13px; }
                                 if row.previous != "": Text { text: "修订前正文"; color: Theme.secondary; font-size: 12px; font-weight: 600; }
                                 if row.previous != "": SelectableText { text: row.previous; text-color: Theme.ink; font-size: 13px; }
-                                if row.proposed != "": Text { text: row.applied ? "修订后的完整正文" : "建议修订的完整正文"; color: Theme.accent; font-size: 12px; font-weight: 600; }
+                                if row.proposed != "": Text { text: row.applied ? "修订后的完整正文" : "未应用的历史草稿"; color: Theme.accent; font-size: 12px; font-weight: 600; }
                                 if row.proposed != "": SelectableText { text: row.proposed; text-color: Theme.ink; font-size: 13px; }
                                 if row.evidence != "": Text { text: "依据"; color: Theme.secondary; font-size: 12px; font-weight: 600; }
                                 if row.evidence != "": SelectableText { text: row.evidence; text-color: Theme.secondary; font-size: 12px; }
-                                if row.can-apply: HorizontalLayout { alignment: start; ActionButton { label: "确认采用此修订"; min-width: 150px; height: 40px; disabled: root.busy; activated => { root.apply(row.index); } } }
-                                if row.applied: Text { text: "已应用，历史修订已保留"; color: #138578; font-size: 12px; }
+                                if row.applied: Text { text: "已应用，近期修订可回查"; color: Theme.green; font-size: 12px; }
                             }
                         }
                     }

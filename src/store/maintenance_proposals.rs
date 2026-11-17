@@ -1,4 +1,4 @@
-//! 维护只对 Agent 报告形成待确认草案；发布和确认都复核实际使用修订，不凭报告直接改事实。
+//! 维护依据实际 Agent 使用报告生成草稿；自动发布前复核修订与观察归属，不把报告当独立事实。
 use super::knowledge_jobs::Snapshot;
 use super::*;
 use crate::{knowledge::MemoryType, recall_usage::UseOutcome, text_model::MaintenanceRevision};
