@@ -8,6 +8,75 @@ use sea_orm::{
 use std::collections::HashSet;
 
 impl Store {
+    /// 校验模型原始依据必须先于可信旧分支并集，不能用旧关系“修好”模型的错误修订。
+    pub(super) fn validate_model_topic_links(
+        snapshot: &super::knowledge_jobs::Snapshot,
+        draft: &crate::text_model::Draft,
+    ) -> Result<()> {
+        for link in &draft.links {
+            if let Some(target) = snapshot.memories.iter().find(|m| m.id == link.memory_id) {
+                if link.relation == Relation::DerivedFrom && link.revision != Some(target.revision)
+                {
+                    return Err(crate::text_model::error(
+                        "model_evidence_invalid",
+                        "模型原始依据与已读修订不匹配",
+                    ));
+                }
+            } else if !snapshot.memories.iter().any(|m| {
+                (Some(m.id) == draft.memory_id || draft.merge_from.contains(&m.id))
+                    && m.links.contains(link)
+            }) {
+                return Err(crate::text_model::error(
+                    "model_evidence_invalid",
+                    "未读关系只能保留原主题的完全相同入口",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// 容量只用于当前模型输入，不改变持久快照或推测可删除的历史分支。
+    pub(super) fn topic_model_memories(
+        memories: &[super::knowledge_jobs::MemorySnapshot],
+    ) -> Result<Vec<Value>> {
+        memories.iter().map(|memory| {
+            let mut value = serde_json::to_value(memory).map_err(|_| Error::unavailable())?;
+            if memory.memory_type == MemoryType::Topic {
+                value["link_capacity"] = json!({"used":memory.links.len(),"remaining":crate::knowledge::MAX_LINKS.saturating_sub(memory.links.len()),"limit":crate::knowledge::MAX_LINKS});
+            }
+            Ok(value)
+        }).collect()
+    }
+
+    /// 只折叠完全相同的依据；同对象的冲突修订不能靠取最大值隐藏。
+    pub(super) fn normalize_topic_links(links: &mut Vec<Link>) -> Result<()> {
+        let mut revisions = std::collections::HashMap::new();
+        let mut normalized = Vec::new();
+        for link in links.iter() {
+            link.validate().map_err(|_| {
+                crate::text_model::error("model_evidence_invalid", "主题关系格式无效")
+            })?;
+            if let Some(previous) = revisions.insert((link.memory_id, link.relation), link.revision)
+            {
+                if previous != link.revision {
+                    return Err(crate::text_model::error(
+                        "model_evidence_invalid",
+                        "同一主题关系给出了冲突修订",
+                    ));
+                }
+            } else {
+                normalized.push(link.clone());
+            }
+        }
+        if normalized.len() > crate::knowledge::MAX_LINKS {
+            return Err(crate::text_model::error(
+                "model_evidence_invalid",
+                "主题关系并集超过32条，须保留分层入口，不能丢弃旧引用",
+            ));
+        }
+        *links = normalized;
+        Ok(())
+    }
     /// 保留入口还被别名使用时，不能把它改成普通记忆或迁到另一适用范围。
     pub(super) async fn check_alias_dependents<C: ConnectionTrait>(
         db: &C,
@@ -100,7 +169,7 @@ impl Store {
             draft.links.retain(|l| {
                 Some(l.memory_id) != draft.memory_id && !draft.merge_from.contains(&l.memory_id)
             });
-            if draft.links.len() > 32 {
+            if draft.links.len() > crate::knowledge::MAX_LINKS {
                 return Err(crate::text_model::error(
                     "model_evidence_invalid",
                     "合并后超过32条关系，须保留分层主题，不能丢弃入口",

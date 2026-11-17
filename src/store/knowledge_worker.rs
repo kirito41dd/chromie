@@ -89,7 +89,7 @@ impl Store {
                 .await;
         }
         // 自动批次、预算修订与工作标记仅供服务恢复使用，不是模型需要理解的资料。
-        let model_input = json!({"kind":snapshot.kind,"memories":snapshot.memories,"events":snapshot.events,"usage":snapshot.usage,"conversation":snapshot.automatic.as_ref().and_then(|a|a.conversation.as_ref()).map(|c|json!({"current_title":c.title,"title_locked":c.title_locked,"new_event_ids":c.work_event_ids}))});
+        let model_input = json!({"kind":snapshot.kind,"memories":Self::topic_model_memories(&snapshot.memories)?,"events":snapshot.events,"usage":snapshot.usage,"conversation":snapshot.automatic.as_ref().and_then(|a|a.conversation.as_ref()).map(|c|json!({"current_title":c.title,"title_locked":c.title_locked,"new_event_ids":c.work_event_ids}))});
         let output = self
             .call_text_model_guarded(
                 &self.text_connection(&config).await?,
@@ -172,6 +172,8 @@ impl Store {
                 draft.expected_revision = Some(existing.revision);
             }
             let topic_title = crate::knowledge::title(&draft.content);
+            Self::validate_model_topic_links(&snapshot, &draft)?;
+            Self::normalize_topic_links(&mut draft.links)?;
             let merged = Self::prepare_topic_merge(&snapshot, &mut draft, &mut edited)?;
             let previous = draft.memory_id.and_then(|id| memories.get(&id).copied());
             if let Some(previous) = previous {
@@ -186,6 +188,7 @@ impl Store {
                     }
                 }
             }
+            Self::normalize_topic_links(&mut draft.links)?;
             for link in &draft.links {
                 link.validate()?;
                 let Some(target) = memories.get(&link.memory_id) else {

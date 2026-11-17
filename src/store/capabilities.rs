@@ -131,7 +131,7 @@ impl Store {
                 references: true,
                 backlinks: true,
                 topic_navigation: true,
-                max_links_per_memory: 32,
+                max_links_per_memory: crate::knowledge::MAX_LINKS as u32,
                 background_llm,
             },
         })

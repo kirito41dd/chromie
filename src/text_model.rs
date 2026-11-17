@@ -112,6 +112,64 @@ pub(crate) struct Conflict {
 
 pub(crate) const INSTRUCTIONS: &str = include_str!("text_model_instructions.md");
 
+/// 每次调用仅携带当前阶段的协议，避免生成和核对互相混用输出结构。
+#[derive(Clone, Copy)]
+enum Task {
+    Probe,
+    Organize,
+    Extract,
+    Review,
+    Maintain,
+}
+impl Task {
+    fn from_input(input: &Value) -> Result<Self> {
+        match input["kind"].as_str() {
+            Some("probe") => Ok(Self::Probe),
+            Some("organize") => Ok(Self::Organize),
+            Some("extract") => Ok(Self::Extract),
+            Some("review") => Ok(Self::Review),
+            Some("maintain") => Ok(Self::Maintain),
+            _ => Err(Error::invalid("文本模型任务类型无效")),
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Probe => "probe",
+            Self::Organize => "organize",
+            Self::Extract => "extract",
+            Self::Review => "review",
+            Self::Maintain => "maintain",
+        }
+    }
+    fn instructions(self) -> String {
+        let topics = match self {
+            Self::Organize | Self::Maintain => include_str!("text_prompts/topics.md"),
+            _ => "",
+        };
+        let stage = match self {
+            Self::Probe => "本次kind=probe，仅返回{\"notes\":[],\"conflicts\":[]}。",
+            Self::Organize => include_str!("text_prompts/organize.md"),
+            Self::Extract => include_str!("text_prompts/extract.md"),
+            Self::Review => include_str!("text_prompts/review.md"),
+            Self::Maintain => include_str!("text_prompts/maintain.md"),
+        };
+        format!("{INSTRUCTIONS}\n{stage}\n{topics}")
+    }
+    fn valid_output(self, value: &Value) -> bool {
+        match self {
+            Self::Extract => {
+                serde_json::from_value::<crate::extraction::Generated>(value.clone()).is_ok()
+            }
+            Self::Review => {
+                serde_json::from_value::<crate::extraction::Reviewed>(value.clone()).is_ok()
+            }
+            Self::Probe | Self::Organize | Self::Maintain => {
+                serde_json::from_value::<Output>(value.clone()).is_ok()
+            }
+        }
+    }
+}
+
 pub(crate) fn structural_error(code: &str) -> bool {
     matches!(
         code,
@@ -129,6 +187,7 @@ impl Connection {
         input: &Value,
         usage: &mut Option<crate::embedding::CallUsage>,
     ) -> Result<Value> {
+        let task = Task::from_input(input)?;
         let client = reqwest::Client::builder()
             .user_agent(concat!("Chromie/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(5))
@@ -138,7 +197,7 @@ impl Connection {
             .map_err(|_| Error::unavailable())?;
         let mut request = client.post(format!("{}/chat/completions", self.base_url)).json(&json!({
             "model":self.model,"stream":false,"max_tokens":self.max_output_tokens,"response_format":{"type":"json_object"},
-            "messages":[{"role":"system","content":INSTRUCTIONS},{"role":"user","content":input.to_string()}]
+            "messages":[{"role":"system","content":task.instructions()},{"role":"user","content":input.to_string()}]
         }));
         if let Some(key) = &self.key {
             request = request.bearer_auth(key.as_str());
@@ -189,32 +248,40 @@ impl Connection {
             });
         }
         let value = value.map_err(|_| error("model_http_json", "文本模型响应不是有效 JSON"))?;
+        // 只记录固定枚举和计数，不写入输入、正文、推理原文或服务端任意错误内容。
+        let reject = |code, message| {
+            tracing::warn!(
+                phase = task.name(),
+                code,
+                max_output_tokens = self.max_output_tokens,
+                prompt_tokens = value["usage"]["prompt_tokens"].as_u64(),
+                completion_tokens = value["usage"]["completion_tokens"].as_u64(),
+                reasoning_tokens =
+                    value["usage"]["completion_tokens_details"]["reasoning_tokens"].as_u64(),
+                content_bytes = value["choices"][0]["message"]["content"]
+                    .as_str()
+                    .map(str::len),
+                "文本模型输出未通过校验"
+            );
+            error(code, message)
+        };
         if value["choices"][0]["finish_reason"] != "stop" {
             return Err(if value["choices"][0]["finish_reason"] == "length" {
-                error(
+                reject(
                     "model_output_truncated",
                     "模型输出达到长度上限，未写入记忆；请增加输出预算或减少每批数量",
                 )
             } else {
-                error("model_finish_reason", "模型未正常完成输出，未写入记忆")
+                reject("model_finish_reason", "模型未正常完成输出，未写入记忆")
             });
         }
         let content = value["choices"][0]["message"]["content"]
             .as_str()
-            .ok_or_else(|| error("model_output_missing", "模型未返回文本结果"))?;
+            .ok_or_else(|| reject("model_output_missing", "模型未返回文本结果"))?;
         let parsed: Value = serde_json::from_str(content)
-            .map_err(|_| error("model_output_json", "模型输出不是有效 JSON，未写入记忆"))?;
-        let valid = match input["kind"].as_str() {
-            Some("extract") => {
-                serde_json::from_value::<crate::extraction::Generated>(parsed.clone()).is_ok()
-            }
-            Some("review") => {
-                serde_json::from_value::<crate::extraction::Reviewed>(parsed.clone()).is_ok()
-            }
-            _ => serde_json::from_value::<Output>(parsed.clone()).is_ok(),
-        };
-        if !valid {
-            return Err(error(
+            .map_err(|_| reject("model_output_json", "模型输出不是有效 JSON，未写入记忆"))?;
+        if !task.valid_output(&parsed) {
+            return Err(reject(
                 "model_output_schema",
                 "模型输出结构不符合整理约定，未写入记忆",
             ));

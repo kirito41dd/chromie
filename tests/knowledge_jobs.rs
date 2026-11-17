@@ -128,7 +128,7 @@ async fn complete(
         content["decisions"][0]["content"] =
             json!("虚构工具安装地址为 https://example.invalid/install.sh，下载后按来源说明运行。");
     }
-    if input["kind"] == "organize" && mode == 18 {
+    if input["kind"] == "organize" && matches!(mode, 18 | 26) {
         let topics = input["memories"]
             .as_array()
             .unwrap()
@@ -144,6 +144,17 @@ async fn complete(
                 .map(|m| m["id"].clone())
                 .collect::<Vec<_>>()
         );
+        if mode == 26 {
+            content["notes"][0]["links"][0]["revision"] = json!(1);
+        }
+    }
+    if input["kind"] == "organize" && matches!(mode, 24 | 25) {
+        let all = input["memories"].as_array().unwrap();
+        let topic = all.iter().find(|m| m["memory_type"] == "topic").unwrap();
+        let note = all.iter().find(|m| m["memory_type"] == "note").unwrap();
+        let link =
+            json!({"memory_id":note["id"],"relation":"derived_from","revision":note["revision"]});
+        content = json!({"notes":[{"memory_id":topic["id"],"expected_revision":topic["revision"],"content":"虚构满容量主题\n保留全部原入口。","memory_type":"topic","links":if mode==25 {vec![link;35]}else{vec![link]}}],"conflicts":[]});
     }
     if input["kind"] != "probe" && mode == 19 {
         return Json(json!({"choices":[{"finish_reason":"length","message":{"content":"不得保存的输出片段"}}]})).into_response();
@@ -2266,6 +2277,234 @@ async fn topic_merge_keeps_branches_history_and_redirects() {
         hidden["hidden"], true,
         "遗忘有效主题后不能留下可迁移的悬空别名"
     );
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；满容量主题不能丢掉未读分支"]
+async fn topic_capacity_is_checked_after_preserving_unread_links_and_exact_duplicates_are_folded() {
+    use sea_orm::{ColumnTrait, PaginatorTrait, QueryFilter};
+    let f = fixture().await;
+    save(&f, "fictional-topic-capacity").await;
+    let mut notes = Vec::new();
+    for _ in 0..33 {
+        notes.push(memory(&f).await);
+    }
+    let receipt = f
+        .store
+        .remember(
+            f.space,
+            Remember {
+                request_id: Uuid::now_v7(),
+                content: "虚构满容量主题\n已有32条有效入口。".into(),
+                scope: Scope::Global,
+                source_refs: vec![],
+                memory_type: MemoryType::Topic,
+                links: notes
+                    .iter()
+                    .take(32)
+                    .map(|id| chromie::knowledge::Link {
+                        memory_id: *id,
+                        relation: chromie::knowledge::Relation::DerivedFrom,
+                        revision: Some(1),
+                    })
+                    .collect(),
+            },
+        )
+        .await
+        .unwrap();
+    let topic = Uuid::parse_str(receipt["memory_id"].as_str().unwrap()).unwrap();
+    // 模型只读了新分支，补回32条旧入口后必须原子拒绝，而非截掉旧引用。
+    f.model.mode.store(24, Ordering::SeqCst);
+    let failed = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: failed,
+                kind: JobKind::Organize,
+                memory_ids: vec![topic, notes[32]],
+                event_ids: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    finish_stage(&f).await;
+    let row = job(&f, failed).await;
+    assert_eq!(row.state, "failed");
+    assert_eq!(row.last_error.as_deref(), Some("model_evidence_invalid"));
+    assert_eq!(
+        f.store
+            .get(
+                f.space,
+                serde_json::from_value(json!({"memory_id":topic,"max_chars":8000})).unwrap()
+            )
+            .await
+            .unwrap()["revision"],
+        1
+    );
+    let request = f
+        .model
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r.2["kind"] == "organize")
+        .unwrap()
+        .2
+        .clone();
+    let sent = request["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == topic.to_string())
+        .unwrap();
+    assert_eq!(
+        sent["link_capacity"],
+        json!({"used":32,"remaining":0,"limit":32})
+    );
+    // 同一条已读依据被模型重复35次时只占一个位置；其余31条未读依据仍保留。
+    f.model.mode.store(25, Ordering::SeqCst);
+    let duplicate = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: duplicate,
+                kind: JobKind::Organize,
+                memory_ids: vec![topic, notes[0]],
+                event_ids: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    finish_stage(&f).await;
+    assert_eq!(job(&f, duplicate).await.state, "done");
+    let current = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(json!({"memory_id":topic,"max_chars":8000})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(current["revision"], 2);
+    assert_eq!(
+        chromie::entity::memory_links::Entity::find()
+            .filter(chromie::entity::memory_links::Column::SpaceId.eq(f.space.bytes()))
+            .filter(chromie::entity::memory_links::Column::MemoryId.eq(topic.as_bytes().to_vec()))
+            .filter(chromie::entity::memory_links::Column::Revision.eq(2))
+            .count(&f.store.db)
+            .await
+            .unwrap(),
+        32
+    );
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；旧关系并集不能洗掉模型的错误依据"]
+async fn topic_merge_validates_original_model_revision_before_preserving_trusted_links() {
+    let f = fixture().await;
+    save(&f, "fictional-topic-evidence").await;
+    let note = memory(&f).await;
+    f.store
+        .correct(
+            f.space,
+            Correct {
+                memory_id: note,
+                expected_revision: 1,
+                request_id: Uuid::now_v7(),
+                reason: "虚构检查项更新".into(),
+                content: Some("虚构数据库检查：已更新为第二版。".into()),
+                scope: None,
+                source_refs: None,
+                memory_type: None,
+                links: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut topics = Vec::new();
+    for i in 0..2 {
+        let receipt = f
+            .store
+            .remember(
+                f.space,
+                Remember {
+                    request_id: Uuid::now_v7(),
+                    content: format!("虚构同义检查主题{i}\n第二版检查入口。"),
+                    scope: Scope::Global,
+                    source_refs: vec![],
+                    memory_type: MemoryType::Topic,
+                    links: vec![chromie::knowledge::Link {
+                        memory_id: note,
+                        relation: chromie::knowledge::Relation::DerivedFrom,
+                        revision: Some(2),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        topics.push(Uuid::parse_str(receipt["memory_id"].as_str().unwrap()).unwrap());
+    }
+    // 两份主题均有合法A@2；模型错误提供A@1，不能在并集时被max替换而通过。
+    f.model.mode.store(26, Ordering::SeqCst);
+    let invalid = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: invalid,
+                kind: JobKind::Organize,
+                memory_ids: vec![note, topics[0], topics[1]],
+                event_ids: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    finish_stage(&f).await;
+    assert_eq!(
+        job(&f, invalid).await.last_error.as_deref(),
+        Some("model_evidence_invalid")
+    );
+    for id in &topics {
+        let view = f
+            .store
+            .get(
+                f.space,
+                serde_json::from_value(json!({"memory_id":id,"max_chars":8000})).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(view["revision"], 1);
+        assert_eq!(view["memory_type"], "topic");
+    }
+    // 同样的并集使用实际已读A@2仍应正常合并。
+    f.model.mode.store(18, Ordering::SeqCst);
+    let valid = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: valid,
+                kind: JobKind::Organize,
+                memory_ids: vec![note, topics[0], topics[1]],
+                event_ids: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    finish_stage(&f).await;
+    assert_eq!(job(&f, valid).await.state, "done");
+    let alias = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(json!({"memory_id":topics[1],"max_chars":8000})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(alias["memory_type"], "topic_alias");
 }
 
 #[tokio::test]

@@ -5,6 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[cfg(feature = "server")]
+pub(crate) const MAX_LINKS: usize = 32;
+
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryType {

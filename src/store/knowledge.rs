@@ -40,7 +40,7 @@ impl Store {
         links: &[Link],
         preserve: bool,
     ) -> Result<()> {
-        if links.len() > 32 {
+        if links.len() > crate::knowledge::MAX_LINKS {
             return Err(Error::invalid("每条记忆最多关联 32 条关系"));
         }
         let mut unique = HashSet::new();
