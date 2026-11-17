@@ -69,6 +69,13 @@ impl Store {
         for head in heads {
             let id = uuid_from_bytes(&head.id)?;
             let revision = Self::revision(&tx, &head).await?;
+            if revision.memory_type == "topic_alias"
+                && Self::alias_redirect(&tx, space, id, head.current_revision)
+                    .await?
+                    .is_none()
+            {
+                continue;
+            }
             let content = revision.content.ok_or_else(Error::unavailable)?;
             let secret = secrets::Entity::find_by_id((space.bytes(), head.id))
                 .one(&tx)

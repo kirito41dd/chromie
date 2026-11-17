@@ -33,6 +33,7 @@ fn skip(config: i64) -> sea_orm::sea_query::SelectStatement {
                     .add(
                         Condition::any()
                             .add(items::Column::State.eq("queued"))
+                            .add(items::Column::State.eq("blocked"))
                             .add(items::Column::RunAfter.gt(now())),
                     ),
             ),
@@ -59,23 +60,27 @@ pub(super) fn in_conversation(
 impl Store {
     /// 两类业务交替获得同一个自动工作槽；空的一类不会阻塞另一类。
     pub async fn schedule_automatic(&self) -> Result<usize> {
-        let prefer_extract = settings::Entity::find_by_id(1u8)
+        let last = settings::Entity::find_by_id(1u8)
             .one(&self.db)
             .await?
-            .is_none_or(|s| s.last_kind == "organize");
-        let first = if prefer_extract {
-            self.schedule_extraction().await?
-        } else {
-            self.schedule_organization().await?
+            .map(|s| s.last_kind)
+            .unwrap_or_else(|| "maintain".into());
+        let order = match last.as_str() {
+            "organize" => [JobKind::Extract, JobKind::Maintain, JobKind::Organize],
+            "extract" => [JobKind::Maintain, JobKind::Organize, JobKind::Extract],
+            _ => [JobKind::Organize, JobKind::Extract, JobKind::Maintain],
         };
-        if first > 0 {
-            return Ok(first);
+        for kind in order {
+            let count = match kind {
+                JobKind::Extract => self.schedule_extraction().await?,
+                JobKind::Organize => self.schedule_organization().await?,
+                JobKind::Maintain => self.schedule_maintenance().await?,
+            };
+            if count > 0 {
+                return Ok(count);
+            }
         }
-        if prefer_extract {
-            self.schedule_organization().await
-        } else {
-            self.schedule_extraction().await
-        }
+        Ok(0)
     }
     pub async fn schedule_extraction(&self) -> Result<usize> {
         let Some(config) = text_model_settings::Entity::find_by_id(1u8)
@@ -136,13 +141,26 @@ impl Store {
         {
             return Ok(0);
         }
+        let previous = items::Entity::find_by_id((space.bytes(), first.id.clone()))
+            .one(&tx)
+            .await?;
+        let batch = if let Some(previous) = previous.filter(|p| {
+            p.config_revision == config.revision
+                && p.last_error
+                    .as_deref()
+                    .is_some_and(crate::text_model::structural_error)
+        }) {
+            Self::smaller_knowledge_batch(&tx, space, previous.job_id, setting.batch_size).await?
+        } else {
+            u64::from(setting.batch_size)
+        };
         let selected = in_conversation(
             due(config.revision).filter(events::Column::SpaceId.eq(space.bytes())),
             &key,
         )
         .order_by_asc(events::Column::OccurredAt)
         .order_by_asc(events::Column::Id)
-        .limit(u64::from(setting.batch_size))
+        .limit(batch)
         .all(&tx)
         .await?;
         let Some(first) = selected.first() else {
@@ -288,6 +306,13 @@ impl Store {
         if row.automatic == 0 || row.kind != "extract" {
             return Ok(());
         }
+        let structural =
+            state == "failed" && error.is_some_and(crate::text_model::structural_error);
+        let state = if structural && Self::knowledge_work_items(row) <= 1 {
+            "blocked"
+        } else {
+            state
+        };
         items::Entity::update_many()
             .col_expr(items::Column::State, Expr::value(state))
             .col_expr(
@@ -296,7 +321,9 @@ impl Store {
             )
             .col_expr(
                 items::Column::RunAfter,
-                Expr::value(if state == "pending" {
+                Expr::value(if structural {
+                    now() + time::Duration::seconds(30)
+                } else if state == "pending" {
                     now()
                 } else {
                     now() + time::Duration::hours(24)

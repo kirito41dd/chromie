@@ -18,6 +18,7 @@ struct State {
     gate: Gate,
     organization: Gate,
     loaded: bool,
+    org_loaded: bool,
     dirty: bool,
     org_dirty: bool,
     provider_revision: i64,
@@ -138,6 +139,7 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
     ui.on_organization_edited(|| {
         if let Some((ui, _, s)) = active() {
             s.borrow_mut().org_dirty = true;
+            ui.set_organization_dirty(true);
             ui.set_organization_notice("".into());
             ui.set_organization_error("".into());
         }
@@ -156,10 +158,16 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
     });
     ui.on_organization_save(||{
         let Some((ui,_,s))=active()else{return};
-        let (Ok(batch),Ok(interval),Ok(limit))=(ui.get_organization_batch().parse::<u32>(),ui.get_organization_interval().parse::<u32>(),ui.get_organization_limit().parse::<u32>())else{ui.set_organization_error("运行参数须为整数。".into());return};
-        if !(1..=10).contains(&batch)||!(10..=86400).contains(&interval)||!(1..=10000).contains(&limit){ui.set_organization_error("每批1～10条，间隔10～86400秒，每日1～10000次。".into());return}
+        let (Ok(batch),Ok(interval),Ok(limit),Ok(hours))=(ui.get_organization_batch().parse::<u32>(),ui.get_organization_interval().parse::<u32>(),ui.get_organization_limit().parse::<u32>(),ui.get_maintenance_hours().parse::<u32>())else{ui.set_organization_error("运行参数须为整数。".into());return};
+        if !(1..=10).contains(&batch)||!(10..=86400).contains(&interval)||!(1..=10000).contains(&limit)||!(1..=168).contains(&hours){ui.set_organization_error("每批1～10条，间隔10～86400秒，每日1～10000次，维护周期1～168小时。".into());return}
         let revision=s.borrow().org_revision;
-        launch("organization-save",json!({"expected_revision":revision,"enabled":ui.get_organization_enabled(),"extraction_enabled":ui.get_extraction_enabled(),"batch_size":batch,"interval_seconds":interval,"daily_limit":limit}));
+        launch("organization-save",json!({"expected_revision":revision,"enabled":ui.get_organization_enabled(),"extraction_enabled":ui.get_extraction_enabled(),"maintenance_enabled":ui.get_maintenance_enabled(),"maintenance_interval_hours":hours,"batch_size":batch,"interval_seconds":interval,"daily_limit":limit}));
+    });
+    ui.on_organization_reload(|| {
+        if let Some((ui, _, _)) = active() {
+            ui.set_organization_notice("".into());
+            launch("organization-reload", json!({}));
+        }
     });
 }
 pub(crate) fn clear() {
@@ -169,6 +177,7 @@ pub(crate) fn clear() {
         s.gate.clear();
         s.organization.clear();
         s.loaded = false;
+        s.org_loaded = false;
         s.dirty = false;
         s.org_dirty = false;
         s.embedding = None;
@@ -181,6 +190,15 @@ pub(crate) fn clear() {
         ui.set_provider_summary("".into());
         ui.set_provider_busy(false);
         ui.set_organization_busy(false);
+        ui.set_organization_loaded(false);
+        ui.set_organization_dirty(false);
+        ui.set_organization_saved_enabled(false);
+        ui.set_extraction_saved_enabled(false);
+        ui.set_maintenance_saved_enabled(false);
+        ui.set_organization_enabled(false);
+        ui.set_extraction_enabled(false);
+        ui.set_maintenance_enabled(false);
+        ui.set_maintenance_hours("24".into());
         ui.set_provider_notice("".into());
         ui.set_provider_error("".into());
         ui.set_organization_error("".into());
@@ -188,11 +206,13 @@ pub(crate) fn clear() {
     }
 }
 pub(crate) fn load() {
-    if let Some((_, _, s)) = active()
-        && !s.borrow().loaded
-    {
-        launch("read", json!({}));
-        launch("organization-read", json!({}));
+    if let Some((ui, _, s)) = active() {
+        if !s.borrow().loaded && !ui.get_provider_busy() {
+            launch("read", json!({}));
+        }
+        if !s.borrow().org_loaded && !ui.get_organization_busy() {
+            reload_organization();
+        }
     }
 }
 fn apply_selections(ui: &Dashboard, s: &State) {
@@ -277,10 +297,37 @@ pub fn receive_provider(operation: String, generation: u32, status: u16, body: S
     }
     if organization {
         let mut state = s.borrow_mut();
+        state.org_loaded = true;
+        ui.set_organization_loaded(true);
+        ui.set_organization_saved_enabled(value["enabled"] == true);
+        ui.set_extraction_saved_enabled(value["extraction_enabled"] == true);
+        ui.set_maintenance_saved_enabled(value["maintenance_enabled"] == true);
+        // 进度变化不改设置版本；另一处保存的选择不能成为旧草稿的新写入基线。
+        if operation == "organization-read"
+            && state.org_dirty
+            && state.org_revision != value["revision"].as_i64().unwrap_or(0)
+        {
+            ui.set_organization_error(
+                "任务设置已在其他位置变更，草稿已保留；重新载入会放弃当前草稿。".into(),
+            );
+            return;
+        }
         state.org_revision = value["revision"].as_i64().unwrap_or(0);
-        if operation == "organization-save" || !state.org_dirty {
+        if matches!(
+            operation.as_str(),
+            "organization-save" | "organization-reload"
+        ) || !state.org_dirty
+        {
             ui.set_organization_enabled(value["enabled"] == true);
             ui.set_extraction_enabled(value["extraction_enabled"] == true);
+            ui.set_maintenance_enabled(value["maintenance_enabled"] == true);
+            ui.set_maintenance_hours(
+                value["maintenance_interval_hours"]
+                    .as_u64()
+                    .unwrap_or(24)
+                    .to_string()
+                    .into(),
+            );
             ui.set_organization_batch(
                 value["batch_size"]
                     .as_u64()
@@ -303,13 +350,22 @@ pub fn receive_provider(operation: String, generation: u32, status: u16, body: S
                     .into(),
             );
             state.org_dirty = false;
+            ui.set_organization_dirty(false);
+        }
+        if operation == "organization-reload" {
+            ui.set_organization_notice("已载入最新任务设置。".into());
         }
         if operation == "organization-save" {
             ui.set_organization_notice(
-                if value["enabled"] == true || value["extraction_enabled"] == true {
-                    "已保存，后台将按选项逐步处理。"
+                if value["enabled"] != true
+                    && value["extraction_enabled"] != true
+                    && value["maintenance_enabled"] != true
+                {
+                    "自动任务已关闭，手动提炼和现有记忆继续可用。"
+                } else if !ui.get_text_model_enabled() {
+                    "任务选择已保存，等待文本模型可调用后自动运行。"
                 } else {
-                    "已暂停，现有记忆和主题继续可用。"
+                    "任务设置已保存，后台将按所选任务自动处理。"
                 }
                 .into(),
             );

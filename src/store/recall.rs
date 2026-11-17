@@ -283,6 +283,9 @@ impl Store {
                 }
                 Err(error) => return Err(error),
             };
+            if card["memory_type"] == "topic_alias" {
+                continue;
+            }
             if candidate.semantic_score.is_some()
                 && candidate.indexed_revision.map(i64::from)
                     != card.get("revision").and_then(Value::as_i64)

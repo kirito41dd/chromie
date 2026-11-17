@@ -113,9 +113,22 @@ impl Store {
             .await?;
             Self::schedule(&tx, space, id, 1).await?;
         }
+        for (id, links) in &relations {
+            Self::check_links(&tx, space, *id, links, false).await?;
+            Self::add_links(&tx, space, *id, 1, links).await?;
+        }
         for (id, links) in relations {
-            Self::check_links(&tx, space, id, &links, false).await?;
-            Self::add_links(&tx, space, id, 1, &links).await?;
+            let head = Self::head(&tx, space, id).await?;
+            let revision = Self::revision(&tx, &head).await?;
+            Self::check_topic_alias(
+                &tx,
+                space,
+                id,
+                crate::knowledge::MemoryType::parse(&revision.memory_type)?,
+                revision.project_key.as_deref(),
+                &links,
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(result)

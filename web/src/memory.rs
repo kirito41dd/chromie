@@ -10,6 +10,11 @@ pub struct Usage {
     pub evaluated_count: u64,
     pub useful_count: u64,
     pub web_recall_count: u64,
+    pub used_count: u64,
+    pub succeeded_count: u64,
+    pub outdated_count: u64,
+    pub environment_blocked_count: u64,
+    pub unverified_count: u64,
 }
 
 impl Usage {
@@ -35,11 +40,30 @@ impl Usage {
                 self.evaluated_count, self.useful_count
             )
         };
+        let usage = if self.used_count == 0 {
+            String::new()
+        } else {
+            format!(
+                "\n当前修订实际使用 {} 次：成功 {} · 内容过时 {} · 环境受限 {} · 未验证 {}。均为 Agent 报告，未经独立验证。",
+                self.used_count,
+                self.succeeded_count,
+                self.outdated_count,
+                self.environment_blocked_count,
+                self.unverified_count
+            )
+        };
         format!(
-            "Agent 累计召回 {} 次（含历史修订）；{evaluation}。",
+            "Agent 累计召回 {} 次（含历史修订）；{evaluation}。{usage}",
             self.agent_recall_count
         )
     }
+}
+
+/// 后端补回的旧待确认项必须优先保留，不能被展示上限再次丢弃。
+pub(crate) fn pending_first(rows: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    let mut sorted = rows.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|j| j["result"]["pending_revisions"].as_u64().unwrap_or(0) == 0);
+    sorted
 }
 
 pub fn order(index: i32) -> &'static str {
@@ -126,6 +150,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn old_pending_maintenance_survives_twenty_recent_results() {
+        let mut rows = (0..20)
+            .map(|i| serde_json::json!({"job_id":i,"result":{"pending_revisions":0}}))
+            .collect::<Vec<_>>();
+        rows.push(serde_json::json!({"job_id":"old-pending","result":{"pending_revisions":1}}));
+        let shown = pending_first(&rows)
+            .into_iter()
+            .take(20)
+            .collect::<Vec<_>>();
+        assert_eq!(shown[0]["job_id"], "old-pending");
+        assert_eq!(shown.len(), 20);
+    }
+
+    #[test]
     fn usefulness_uses_evaluations_as_denominator_and_unknown_stays_unknown() {
         let unknown = Usage {
             agent_recall_count: 10,
@@ -138,6 +176,7 @@ mod tests {
             evaluated_count: 6,
             useful_count: 4,
             web_recall_count: 9,
+            ..Default::default()
         };
         assert_eq!(assessed.label(), "召回 10 · 有用 4 / 已评 6");
         assert!(

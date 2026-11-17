@@ -18,6 +18,8 @@ pub struct Model {
     pub updated_at: TimeDateTime,
     pub extraction_enabled: i8,
     pub last_kind: String,
+    pub maintenance_enabled: i8,
+    pub maintenance_interval_hours: u32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

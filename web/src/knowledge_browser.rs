@@ -295,6 +295,10 @@ pub fn receive_knowledge(operation: String, generation: u32, status: u16, body: 
                 ui.set_knowledge_error("这条记忆已被遗忘。".into());
                 return;
             }
+            if let Some(target) = value["redirect_to"].as_str() {
+                open(target, false);
+                return;
+            }
             let content = value["content"].as_str().unwrap_or_default();
             let mut s = state.borrow_mut();
             s.body.push_str(content);
@@ -318,7 +322,9 @@ pub fn receive_knowledge(operation: String, generation: u32, status: u16, body: 
                         "记忆"
                     },
                     value["revision"],
-                    if value["knowledge"]["needs_review"] == true {
+                    if value["pending_revisions"].as_u64().unwrap_or(0) > 0 {
+                        " · 有待确认变更，使用前需核对"
+                    } else if value["knowledge"]["needs_review"] == true {
                         " · 依据已变化，需要核对"
                     } else {
                         ""

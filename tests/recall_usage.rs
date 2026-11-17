@@ -7,7 +7,7 @@ use chromie::{
     search::Search,
     space_key::SpaceKey,
     store::Store,
-    types::{Correct, Forget, Recall, Remember, Scope, SecretCreate, SpaceId},
+    types::{Correct, Forget, Recall, Remember, Scope, SpaceId},
     web_session::WebSessions,
 };
 use migration::MigratorTrait;
@@ -442,6 +442,9 @@ async fn budget_filtering_and_unreturned_or_foreign_ids_do_not_create_false_coun
         "not_found"
     );
     let foreign_insert = recall_items::ActiveModel {
+        use_outcome: Set(None),
+        use_reason: Set(None),
+        used_at: Set(None),
         space_id: Set(space.bytes_for_test()),
         recall_id: Set(Uuid::parse_str(run["recall_id"].as_str().unwrap())
             .unwrap()
@@ -545,8 +548,8 @@ async fn popular_and_useful_orders_use_agent_activity_current_revision_and_thirt
 
 #[tokio::test]
 #[ignore = "需要一次性空隔离 MySQL 与 Qdrant"]
-async fn version_eight_upgrade_preserves_memories_credentials_and_secret_ciphertext() {
-    let url = std::env::var("CHROMIE_USAGE_UPGRADE_DATABASE_URL").unwrap();
+async fn version_twenty_upgrade_preserves_memories_credentials_and_secret_ciphertext() {
+    let url = std::env::var("CHROMIE_TEST_DATABASE_URL").unwrap();
     assert!(reqwest::Url::parse(&url).unwrap().path().ends_with("_test"));
     let mut options = ConnectOptions::new(url);
     options.sqlx_logging(false);
@@ -556,7 +559,7 @@ async fn version_eight_upgrade_preserves_memories_credentials_and_secret_ciphert
         !manager.has_table("spaces").await.unwrap(),
         "升级用例必须使用空库"
     );
-    migration::Migrator::up(&db, Some(8)).await.unwrap();
+    migration::Migrator::up(&db, Some(20)).await.unwrap();
     let store = support::enable(Store::new(
         db,
         Search::new(
@@ -593,6 +596,7 @@ async fn version_eight_upgrade_preserves_memories_credentials_and_secret_ciphert
         .await
         .unwrap();
         chromie::entity::memory_revisions::ActiveModel {
+            memory_type: Set("note".into()),
             space_id: Set(space.bytes_for_test()),
             memory_id: Set(id.as_bytes().to_vec()),
             revision: Set(1),
@@ -675,7 +679,7 @@ async fn version_eight_upgrade_preserves_memories_credentials_and_secret_ciphert
             .await
             .unwrap()
             .len(),
-        15
+        21
     );
     store.initialize_model_admin(None).await.unwrap();
     assert_eq!(
@@ -733,4 +737,113 @@ async fn version_eight_upgrade_preserves_memories_credentials_and_secret_ciphert
     .unwrap()
     .unwrap();
     assert!(record.useful.is_none());
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL 与 Qdrant；实际使用反馈独立、可晋级、按版本且原子"]
+async fn actual_usage_is_owned_atomic_idempotent_and_revision_bound() {
+    let (store, base, slug, space, token, _, server) = fixture().await;
+    let marker = format!("actual-use-{}", Uuid::now_v7());
+    let a = memory(&store, space, format!("{marker} 虚构方法甲")).await;
+    let b = memory(&store, space, format!("{marker} 虚构方法乙")).await;
+    let run = recall(&base, &slug, &token, &marker, 8000).await;
+    let report = |items: Value| json!({"recalls":[{"recall_id":run["recall_id"],"usage":items}]});
+    let unknown = report(json!([{"memory_id":a,"outcome":"unverified"}]));
+    assert_eq!(
+        rpc(&base, &slug, &token, "feedback_recall", unknown.clone()).await["structuredContent"]["usage_recorded"],
+        1
+    );
+    let (_, other, _) = support::grant(&store, space, false).await;
+    assert!(rpc(&base, &slug, &other, "feedback_recall", unknown.clone()).await["isError"] == true);
+    let final_report =
+        report(json!([{"memory_id":a,"outcome":"succeeded","reason":"虚构检查已实际通过"}]));
+    assert_eq!(
+        rpc(
+            &base,
+            &slug,
+            &token,
+            "feedback_recall",
+            final_report.clone()
+        )
+        .await["structuredContent"]["usage_recorded"],
+        1
+    );
+    assert_eq!(
+        rpc(&base, &slug, &token, "feedback_recall", final_report).await["structuredContent"]["usage_replayed"],
+        1
+    );
+    assert_eq!(
+        rpc(&base, &slug, &token, "feedback_recall", unknown).await["structuredContent"]["usage_replayed"],
+        1
+    );
+    let values = stats(&store, space, a).await;
+    assert_eq!(values["used_count"], 1);
+    assert_eq!(values["succeeded_count"], 1);
+    assert_eq!(values["unverified_count"], 0);
+    assert_eq!(values["evaluated_count"], 0);
+    let conflicting = report(
+        json!([{"memory_id":b,"outcome":"content_outdated","reason":"虚构内容已变更"},{"memory_id":a,"outcome":"environment_blocked"}]),
+    );
+    assert_eq!(
+        rpc(&base, &slug, &token, "feedback_recall", conflicting).await["isError"],
+        true
+    );
+    assert_eq!(
+        stats(&store, space, b).await["used_count"],
+        0,
+        "整批冲突回滚"
+    );
+    let invalid = report(json!([{"memory_id":Uuid::now_v7(),"outcome":"succeeded"}]));
+    assert_eq!(
+        rpc(&base, &slug, &token, "feedback_recall", invalid).await["isError"],
+        true
+    );
+    store
+        .correct(
+            space,
+            Correct {
+                memory_id: b,
+                expected_revision: 1,
+                request_id: Uuid::now_v7(),
+                reason: "虚构升级".into(),
+                content: Some(format!("{marker} 方法乙新版本")),
+                scope: None,
+                source_refs: None,
+                memory_type: None,
+                links: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rpc(
+            &base,
+            &slug,
+            &token,
+            "feedback_recall",
+            report(json!([{"memory_id":b,"outcome":"content_outdated","reason":"旧版本过时"}]))
+        )
+        .await["isError"],
+        false
+    );
+    assert_eq!(
+        stats(&store, space, b).await["used_count"],
+        0,
+        "旧版本反馈不计入新版本"
+    );
+    assert!(
+        chromie::entity::maintenance_items::Entity::find_by_id((
+            space.bytes(),
+            b.as_bytes().to_vec()
+        ))
+        .one(
+            &Database::connect(std::env::var("CHROMIE_TEST_DATABASE_URL").unwrap())
+                .await
+                .unwrap()
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    server.abort();
 }

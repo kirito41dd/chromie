@@ -25,14 +25,16 @@ component ExtractionJobRow inherits Rectangle {
 export struct ExtractionDecision { index: int, action: string, reason: string, body: string, evidence: string, previous: string, proposed: string, can-apply: bool, applied: bool }
 export component ExtractionResults inherits Rectangle {
     in property <[ExtractionJob]> jobs;
+    in property <string> title: "消息提炼结果";
+    in property <string> description: "新结论自动保存，明确更正自动修订；其余变更查看依据后确认。";
     callback open(string);
     private property <bool> expanded: false;
     height: layout.preferred-height;
     background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
     layout := VerticalLayout {
         padding: 18px; spacing: 10px;
-        Text { text: "消息提炼结果"; color: Theme.ink; font-size: 16px; font-weight: 600; }
-        SelectableText { text: "新结论自动保存；旧记忆的修订须在查看依据后确认。"; text-color: Theme.secondary; font-size: 12px; }
+        Text { text: root.title; color: Theme.ink; font-size: 16px; font-weight: 600; }
+        SelectableText { text: root.description; text-color: Theme.secondary; font-size: 12px; }
         for job[index] in root.jobs: ExtractionJobRow { visible: root.expanded || index < 3; item: job; height: self.visible ? 64px : 0px; activated => { root.open(job.id); } }
         if root.jobs.length > 3: ActionButton { label: root.expanded ? "收起记录" : "查看更多记录"; subtle: true; height: 36px; activated => { root.expanded = !root.expanded; } }
     }
@@ -61,7 +63,7 @@ export component ExtractionReader inherits Rectangle {
                 padding: parent.width < 500px ? 16px : 24px; spacing: 14px;
                 HorizontalLayout {
                     height: 36px; spacing: 8px; cross-axis-alignment: center;
-                    Text { text: "提炼结果与依据"; color: Theme.ink; font-size: 18px; font-weight: 600; }
+                    Text { text: "处理结果与依据"; color: Theme.ink; font-size: 18px; font-weight: 600; }
                     Rectangle { horizontal-stretch: 1; }
                     ActionButton { label: "刷新"; subtle: true; min-width: 56px; height: 36px; disabled: root.busy; activated => { root.refresh(); } }
                     close-button := ActionButton { label: "关闭"; subtle: true; min-width: 56px; height: 36px; activated => { root.close(); } }
@@ -79,16 +81,16 @@ export component ExtractionReader inherits Rectangle {
                             content := VerticalLayout {
                                 padding: 16px; spacing: 10px;
                                 Text { text: row.action; color: row.can-apply ? Theme.accent : #138578; font-size: 14px; font-weight: 600; }
-                                SelectableText { text: row.body; text-color: Theme.ink; font-size: 14px; }
+                                if row.body != "" && row.proposed == "": SelectableText { text: row.body; text-color: Theme.ink; font-size: 14px; }
                                 SelectableText { text: row.reason; text-color: Theme.secondary; font-size: 13px; }
-                                if row.previous != "": Text { text: "当前记忆"; color: Theme.secondary; font-size: 12px; font-weight: 600; }
+                                if row.previous != "": Text { text: "修订前正文"; color: Theme.secondary; font-size: 12px; font-weight: 600; }
                                 if row.previous != "": SelectableText { text: row.previous; text-color: Theme.ink; font-size: 13px; }
-                                if row.proposed != "": Text { text: "建议修订的完整正文"; color: Theme.accent; font-size: 12px; font-weight: 600; }
+                                if row.proposed != "": Text { text: row.applied ? "修订后的完整正文" : "建议修订的完整正文"; color: Theme.accent; font-size: 12px; font-weight: 600; }
                                 if row.proposed != "": SelectableText { text: row.proposed; text-color: Theme.ink; font-size: 13px; }
-                                Text { text: "来源引文"; color: Theme.secondary; font-size: 12px; font-weight: 600; }
-                                SelectableText { text: row.evidence; text-color: Theme.secondary; font-size: 12px; }
+                                if row.evidence != "": Text { text: "依据"; color: Theme.secondary; font-size: 12px; font-weight: 600; }
+                                if row.evidence != "": SelectableText { text: row.evidence; text-color: Theme.secondary; font-size: 12px; }
                                 if row.can-apply: HorizontalLayout { alignment: start; ActionButton { label: "确认采用此修订"; min-width: 150px; height: 40px; disabled: root.busy; activated => { root.apply(row.index); } } }
-                                if row.applied: Text { text: "已确认并生成新修订"; color: #138578; font-size: 12px; }
+                                if row.applied: Text { text: "已应用，历史修订已保留"; color: #138578; font-size: 12px; }
                             }
                         }
                     }

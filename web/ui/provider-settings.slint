@@ -57,26 +57,53 @@ export component ProviderSettings inherits Rectangle {
 
 export component OrganizationSettings inherits Rectangle {
     in property <bool> busy;
+    in property <bool> loaded;
+    in property <bool> dirty;
+    in property <bool> model-ready;
+    in property <bool> saved-enabled;
+    in property <bool> saved-extraction-enabled;
+    in property <bool> saved-maintenance-enabled;
     in property <string> error;
     in property <string> notice;
     in-out property <bool> enabled;
     in-out property <bool> extraction-enabled;
+    in-out property <bool> maintenance-enabled;
+    in-out property <string> maintenance-hours;
     in-out property <string> batch;
     in-out property <string> interval;
     in-out property <string> limit;
     private property <bool> advanced;
     callback edited;
     callback save;
+    callback reload;
     height: layout.preferred-height;
     background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
     layout := VerticalLayout {
         padding: root.width < 500px ? 18px : 24px; spacing: 12px;
         Text { text: "后台记忆处理"; color: Theme.ink; font-size: 19px; font-weight: 600; }
-        SelectableText { text: "后台分批整理各空间的普通记忆，先覆盖历史，再处理新增和更正。无需逐批点击，进度显示在看板。"; text-color: Theme.secondary; font-size: 13px; }
-        CheckBox { text: "自动整理普通记忆"; checked <=> root.enabled; enabled: !root.busy; toggled => { root.edited(); } }
-        SelectableText { text: "使用已配置的文本模型，普通记忆正文将发送到所选服务商。Secret 和原始采集消息不参与此项。"; text-color: Theme.muted; font-size: 12px; }
-        CheckBox { text: "自动提炼对话并命名"; checked <=> root.extraction-enabled; enabled: !root.busy; toggled => { root.edited(); } }
+        SelectableText { text: "选择需要自动执行的任务，再保存。三项独立开关，首次默认关闭；进度显示在看板。"; text-color: Theme.secondary; font-size: 13px; }
+        if !root.model-ready: SelectableText { text: "文本模型尚不可调用。可以先保存任务选择，模型配置好或恢复调用后自动运行。"; text-color: Theme.secondary; font-size: 12px; }
+        HorizontalLayout {
+            spacing: 12px; cross-axis-alignment: center;
+            CheckBox { text: "自动整理普通记忆"; checked <=> root.enabled; enabled: !root.busy && root.loaded; toggled => { root.edited(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: !root.loaded ? "读取中…" : root.enabled != root.saved-enabled ? "待保存" : !root.saved-enabled ? "未开启" : root.model-ready ? "已开启" : "等待文本模型"; color: root.enabled != root.saved-enabled ? Theme.accent : root.saved-enabled && root.model-ready ? Theme.green : Theme.muted; font-size: 12px; }
+        }
+        SelectableText { text: "把已保存的普通记忆整理成主题入口和引用关系。记忆正文将发送到服务商，Secret 和原始对话不参与。"; text-color: Theme.muted; font-size: 12px; }
+        HorizontalLayout {
+            spacing: 12px; cross-axis-alignment: center;
+            CheckBox { text: "自动提炼对话并命名"; checked <=> root.extraction-enabled; enabled: !root.busy && root.loaded; toggled => { root.edited(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: !root.loaded ? "读取中…" : root.extraction-enabled != root.saved-extraction-enabled ? "待保存" : !root.saved-extraction-enabled ? "未开启" : root.model-ready ? "已开启" : "等待文本模型"; color: root.extraction-enabled != root.saved-extraction-enabled ? Theme.accent : root.saved-extraction-enabled && root.model-ready ? Theme.green : Theme.muted; font-size: 12px; }
+        }
         SelectableText { text: "开启后，各空间历史和新增的原始对话将发送到文本模型，分批提炼长期记忆并更新会话标题；已处理消息不重复提炼。默认关闭。"; text-color: Theme.muted; font-size: 12px; }
+        HorizontalLayout {
+            spacing: 12px; cross-axis-alignment: center;
+            CheckBox { text: "定期维护记忆"; checked <=> root.maintenance-enabled; enabled: !root.busy && root.loaded; toggled => { root.edited(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: !root.loaded ? "读取中…" : root.maintenance-enabled != root.saved-maintenance-enabled ? "待保存" : !root.saved-maintenance-enabled ? "未开启" : root.model-ready ? "已开启" : "等待文本模型"; color: root.maintenance-enabled != root.saved-maintenance-enabled ? Theme.accent : root.saved-maintenance-enabled && root.model-ready ? Theme.green : Theme.muted; font-size: 12px; }
+        }
+        SelectableText { text: "即使没有新记忆，也按周期核对主题，优先查看 Agent 报告的问题。主题可自动收敛；普通记忆只提出修订建议，等你确认。Secret 不参与。"; text-color: Theme.muted; font-size: 12px; }
         HorizontalLayout { alignment: start;
             ActionButton { label: root.advanced ? "收起运行参数" : "运行参数"; subtle: true; height: 32px; activated => { root.advanced = !root.advanced; } }
         }
@@ -86,14 +113,22 @@ export component OrganizationSettings inherits Rectangle {
             InputField { value <=> root.batch; hint: "10"; disabled: root.busy; edited => { root.edited(); } }
             Text { text: "批次间隔 · 秒"; color: Theme.secondary; font-size: 12px; }
             InputField { value <=> root.interval; hint: "60"; disabled: root.busy; edited => { root.edited(); } }
+            Text { text: "维护周期 · 小时（1～168）"; color: Theme.secondary; font-size: 12px; }
+            InputField { value <=> root.maintenance-hours; hint: "24"; disabled: root.busy; edited => { root.edited(); } }
+            SelectableText { text: "每条记忆完成维护后，到下个周期再检查；新问题报告会提前排队。每批仍受批次间隔与每日额度限制。"; text-color: Theme.muted; font-size: 12px; }
             Text { text: "每日自动处理次数上限"; color: Theme.secondary; font-size: 12px; }
             InputField { value <=> root.limit; hint: "100"; disabled: root.busy; edited => { root.edited(); } }
-            SelectableText { text: "所有空间共享。提炼一批通常占2次（生成、核对），主题整理占1次，失败重试也计入。北京时间每天08:00重置；没有待处理资料时不调用模型。"; text-color: Theme.muted; font-size: 12px; }
+            SelectableText { text: "所有空间共享。提炼一批通常占2次（生成、核对），主题整理、定期维护各占1次，失败重试也计入。北京时间每天08:00重置；没有待处理资料时不调用模型。"; text-color: Theme.muted; font-size: 12px; }
         }
-        if root.error != "": SelectableText { text: root.error; text-color: #a13b33; font-size: 13px; }
+        if root.error != "": VerticalLayout {
+            spacing: 8px;
+            SelectableText { text: root.error; text-color: Theme.danger; font-size: 13px; }
+            HorizontalLayout { alignment: start; ActionButton { label: "重新载入任务设置"; subtle: true; disabled: root.busy; min-width: 144px; activated => { root.reload(); } } }
+        }
         if root.notice != "": SelectableText { text: root.notice; text-color: Theme.green; font-size: 13px; }
+        if root.dirty: SelectableText { text: "有未保存的修改。保存前，后台仍按已保存的设置运行。"; text-color: Theme.accent; font-size: 12px; }
         HorizontalLayout { alignment: start;
-            ActionButton { label: root.busy ? "保存中…" : "保存后台处理"; disabled: root.busy; min-width: 120px; activated => { root.save(); } }
+            ActionButton { label: root.busy ? "处理中…" : "保存任务设置"; disabled: root.busy || !root.loaded || !root.dirty; min-width: 120px; activated => { root.save(); } }
         }
     }
 }

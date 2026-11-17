@@ -89,7 +89,7 @@ impl Store {
                 .await;
         }
         // 自动批次、预算修订与工作标记仅供服务恢复使用，不是模型需要理解的资料。
-        let model_input = json!({"kind":snapshot.kind,"memories":snapshot.memories,"events":snapshot.events,"conversation":snapshot.automatic.as_ref().and_then(|a|a.conversation.as_ref()).map(|c|json!({"current_title":c.title,"title_locked":c.title_locked,"new_event_ids":c.work_event_ids}))});
+        let model_input = json!({"kind":snapshot.kind,"memories":snapshot.memories,"events":snapshot.events,"usage":snapshot.usage,"conversation":snapshot.automatic.as_ref().and_then(|a|a.conversation.as_ref()).map(|c|json!({"current_title":c.title,"title_locked":c.title_locked,"new_event_ids":c.work_event_ids}))});
         let output = self
             .call_text_model_guarded(
                 &self.text_connection(&config).await?,
@@ -102,7 +102,7 @@ impl Store {
             )
             .await?;
         let parsed: Output = serde_json::from_value(output).map_err(|_| {
-            crate::text_model::error("model_response", "模型整理结果结构无效，未写入记忆")
+            crate::text_model::error("model_output_schema", "模型整理结果结构无效，未写入记忆")
         })?;
         let tx = self.begin(space).await?;
         // 配置保存/停用同样持有这把锁；提交不能跨越一次配置切换。
@@ -141,23 +141,38 @@ impl Store {
             .collect();
         if parsed.notes.len() > 5 || parsed.conflicts.len() > 10 {
             return Err(crate::text_model::error(
-                "model_response",
+                "model_evidence_invalid",
                 "模型输出超过整理条数上限",
             ));
         }
         let mut ids = Vec::new();
+        let proposals = Self::maintenance_proposals(&snapshot, parsed.revisions)?;
         let mut edited = HashSet::new();
         let mut titles = HashSet::new();
+        let mut merged_topics = Vec::new();
+        let mut topic_changes = Vec::new();
         for mut draft in parsed.notes {
             crate::types::bounded(&draft.content, 16000)?;
             if !titles.insert(crate::knowledge::title(&draft.content)) {
                 return Err(crate::text_model::error(
-                    "model_response",
+                    "model_evidence_invalid",
                     "模型生成重复主题，未写入记忆",
                 ));
             }
             let mut projects = HashSet::new();
             let mut evidence = 0usize;
+            if draft.memory_id.is_none()
+                && let Some(existing) = snapshot.memories.iter().find(|m| {
+                    m.memory_type == MemoryType::Topic
+                        && crate::knowledge::title(&m.content)
+                            == crate::knowledge::title(&draft.content)
+                })
+            {
+                draft.memory_id = Some(existing.id);
+                draft.expected_revision = Some(existing.revision);
+            }
+            let topic_title = crate::knowledge::title(&draft.content);
+            let merged = Self::prepare_topic_merge(&snapshot, &mut draft, &mut edited)?;
             let previous = draft.memory_id.and_then(|id| memories.get(&id).copied());
             if let Some(previous) = previous {
                 // 模型没有读过的分支原样保留，局部整理不能删掉主题的其他入口。
@@ -174,9 +189,10 @@ impl Store {
             for link in &draft.links {
                 link.validate()?;
                 let Some(target) = memories.get(&link.memory_id) else {
-                    if let Some(previous) =
-                        previous.filter(|previous| previous.links.contains(link))
-                    {
+                    if let Some(previous) = snapshot.memories.iter().find(|m| {
+                        (Some(m.id) == draft.memory_id || draft.merge_from.contains(&m.id))
+                            && m.links.contains(link)
+                    }) {
                         if link.relation == Relation::DerivedFrom {
                             evidence += 1;
                         }
@@ -186,14 +202,14 @@ impl Store {
                         continue;
                     }
                     return Err(crate::text_model::error(
-                        "model_response",
+                        "model_evidence_invalid",
                         "模型引用了本次范围之外的记忆",
                     ));
                 };
                 if link.relation == Relation::DerivedFrom {
                     if link.revision != Some(target.revision) {
                         return Err(crate::text_model::error(
-                            "model_response",
+                            "model_evidence_invalid",
                             "模型依据修订不匹配",
                         ));
                     }
@@ -206,7 +222,7 @@ impl Store {
             for source in &draft.source_refs {
                 let event = events.get(source).ok_or_else(|| {
                     crate::text_model::error(
-                        "model_response",
+                        "model_evidence_invalid",
                         if memories.contains_key(source) {
                             "模型把记忆 ID 填入了消息来源；请用 links 表达记忆关系"
                         } else {
@@ -220,7 +236,7 @@ impl Store {
             }
             if projects.len() > 1 {
                 return Err(crate::text_model::error(
-                    "model_response",
+                    "model_evidence_invalid",
                     "模型混合不同项目的事实，请缩小范围重试",
                 ));
             }
@@ -236,13 +252,13 @@ impl Store {
                 || !draft.source_refs.is_empty()
             {
                 return Err(crate::text_model::error(
-                    "model_response",
+                    "model_evidence_invalid",
                     "主题整理必须提供实际记忆依据，不改写普通记忆",
                 ));
             }
             let result = if let Some(id) = draft.memory_id {
                 let previous = memories.get(&id).ok_or_else(|| {
-                    crate::text_model::error("model_response", "模型试图修改范围之外的主题")
+                    crate::text_model::error("model_evidence_invalid", "模型试图修改范围之外的主题")
                 })?;
                 if previous.memory_type != MemoryType::Topic
                     || draft.expected_revision != Some(previous.revision)
@@ -250,11 +266,17 @@ impl Store {
                     || !edited.insert(id)
                 {
                     return Err(crate::text_model::error(
-                        "model_response",
+                        "model_evidence_invalid",
                         "模型主题修订、范围或类型不匹配",
                     ));
                 }
-                self.correct_tx(
+                let preserved = snapshot
+                    .memories
+                    .iter()
+                    .filter(|m| m.id == id || draft.merge_from.contains(&m.id))
+                    .flat_map(|m| m.links.clone())
+                    .collect::<Vec<_>>();
+                self.correct_with_preserved_links_tx(
                     &tx,
                     space,
                     crate::types::Correct {
@@ -268,12 +290,13 @@ impl Store {
                         memory_type: Some(MemoryType::Topic),
                         links: Some(draft.links),
                     },
+                    &preserved,
                 )
                 .await?
             } else {
                 if draft.expected_revision.is_some() {
                     return Err(crate::text_model::error(
-                        "model_response",
+                        "model_evidence_invalid",
                         "新记忆不能声明已有修订",
                     ));
                 }
@@ -291,6 +314,32 @@ impl Store {
                 )
                 .await?
             };
+            let keeper: Uuid = serde_json::from_value(result["memory_id"].clone())
+                .map_err(|_| Error::unavailable())?;
+            for (id, revision, title) in merged {
+                self.correct_tx(
+                    &tx,
+                    space,
+                    crate::types::Correct {
+                        memory_id: id,
+                        expected_revision: revision,
+                        request_id: Uuid::now_v7(),
+                        reason: "后台整理合并重叠主题，保留旧入口和历史".into(),
+                        content: Some(format!("主题已合并：{title}\n完整入口见关联主题。")),
+                        scope: None,
+                        source_refs: None,
+                        memory_type: Some(MemoryType::TopicAlias),
+                        links: Some(vec![crate::knowledge::Link {
+                            memory_id: keeper,
+                            relation: Relation::Reference,
+                            revision: None,
+                        }]),
+                    },
+                )
+                .await?;
+                merged_topics.push(json!({"from":id,"to":keeper,"title":title}));
+            }
+            topic_changes.push(json!({"memory_id":keeper,"title":topic_title,"action":if draft.memory_id.is_some(){"updated"}else{"created"}}));
             if draft.memory_id.is_none() {
                 let created: Uuid = serde_json::from_value(result["memory_id"].clone())
                     .map_err(|_| Error::unavailable())?;
@@ -308,7 +357,7 @@ impl Store {
                     .any(|id| !memories.contains_key(id))
             {
                 return Err(crate::text_model::error(
-                    "model_response",
+                    "model_evidence_invalid",
                     "冲突说明的引用无效",
                 ));
             }
@@ -321,6 +370,12 @@ impl Store {
         }
         result["memory_ids"] = json!(ids);
         result["conflicts"] = json!(parsed.conflicts);
+        result["merged_topics"] = json!(merged_topics);
+        result["topic_changes"] = json!(topic_changes);
+        if snapshot.kind == JobKind::Maintain {
+            result["pending_revisions"] = json!(proposals.len());
+            result["decisions"] = json!(proposals);
+        }
         let mut active = current.into_active_model();
         active.state = Set("done".into());
         active.payload = Set(None);
@@ -373,6 +428,7 @@ impl Store {
         space: SpaceId,
         snapshot: &Snapshot,
     ) -> Result<()> {
+        Self::check_usage_evidence(db, space, &snapshot.usage).await?;
         for item in &snapshot.memories {
             let current = Self::head(db, space, item.id).await?;
             if current.forgotten_at.is_some() || current.current_revision != item.revision {
@@ -444,6 +500,12 @@ impl Store {
         // Error 仅携带服务定义的静态说明，不把模型响应、SQL 或输入资料放进结果。
         let mut result = current.result.clone().unwrap_or_else(|| json!({}));
         result["error"] = error.json();
+        result["diagnostic"] = json!({
+            "phase":if current.kind == "organize" {"organize"}else if current.kind=="maintain"{"maintain"} else if current.payload.as_ref().is_some_and(|p| !p["review"].is_null()) {"review"} else {"extract"},
+            "snapshot_bytes":current.payload.as_ref().map(|p|p.to_string().len()),
+            "work_items":Self::knowledge_work_items(&current),
+            "code":error.code,"attempts":current.attempts,"automatic_retry":retry
+        });
         let mut active = current.into_active_model();
         active.result = Set(Some(result));
         active.state = Set(if stale {
@@ -465,5 +527,39 @@ impl Store {
         active.update(&tx).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    pub(super) fn knowledge_work_items(row: &jobs::Model) -> usize {
+        let payload = row.payload.as_ref();
+        payload
+            .and_then(|p| {
+                p["automatic"]["conversation"]["work_event_ids"]
+                    .as_array()
+                    .or_else(|| p["automatic"]["memory_ids"].as_array())
+            })
+            .map(Vec::len)
+            .unwrap_or(1)
+    }
+
+    pub(super) async fn smaller_knowledge_batch<C: ConnectionTrait>(
+        db: &C,
+        space: SpaceId,
+        job: Option<Vec<u8>>,
+        configured: u32,
+    ) -> Result<u64> {
+        let Some(job) = job else {
+            return Ok(u64::from(configured));
+        };
+        let rows = jobs::Entity::find()
+            .filter(jobs::Column::SpaceId.eq(space.bytes()))
+            .filter(jobs::Column::Id.eq(job))
+            .one(db)
+            .await?;
+        let size = rows
+            .and_then(|r| r.result)
+            .and_then(|r| r["diagnostic"]["work_items"].as_u64());
+        Ok(size.map_or(u64::from(configured), |n| {
+            (n / 2).max(1).min(u64::from(configured))
+        }))
     }
 }

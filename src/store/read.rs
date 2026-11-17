@@ -128,6 +128,23 @@ impl Store {
         )
         .await?;
         value["memory_type"] = json!(crate::knowledge::MemoryType::parse(&revision.memory_type)?);
+        if revision.memory_type == "topic_alias" {
+            value["redirect_to"] =
+                json!(Self::alias_redirect(db, space, id, head.current_revision).await?);
+            value["maintenance_notice"] =
+                json!("此主题已合并，请沿 redirect_to 读取有效主题；旧正文仍保留在修订历史中");
+        }
+        let pending = if is_current {
+            Self::pending_revisions(db, space, id, head.current_revision).await?
+        } else {
+            0
+        };
+        value["pending_revisions"] = json!(pending);
+        if pending > 0 {
+            value["maintenance_notice"] = json!(
+                "这条记忆存在待确认的变更，当前正文可能已过时；使用前须核对新证据，不能直接沿用旧结论"
+            );
+        }
         let first =
             memory_revisions::Entity::find_by_id((space.bytes(), id.as_bytes().to_vec(), 1))
                 .one(db)

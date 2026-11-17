@@ -132,10 +132,14 @@ impl Store {
         let revision = head.current_revision;
         let (content, project) = if head.forgotten_at.is_none() {
             let revision = Self::revision(&tx, &head).await?;
-            (
-                Some(revision.content.ok_or_else(Error::missing)?),
-                revision.project_key,
-            )
+            if revision.memory_type == "topic_alias" {
+                (None, None)
+            } else {
+                (
+                    Some(revision.content.ok_or_else(Error::missing)?),
+                    revision.project_key,
+                )
+            }
         } else {
             (None, None)
         };

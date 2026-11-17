@@ -1,4 +1,4 @@
-//! 候选只携带公开结论与可回查证据；核对阶段不能借新增动作绕过修订确认。
+//! 候选携带公开结论与可回查证据；明确更正与推测状态变化使用不同发布条件。
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -58,6 +58,22 @@ pub(crate) struct Decision {
     /// 核对时可补上生成阶段遗漏的用户授权/变更原话；仍须逐字属于固定输入。
     #[serde(default)]
     pub evidence: Vec<Evidence>,
+    /// 仅指用户明确改变同一事项的原话；发布方还要验证角色、新增范围和证据时序。
+    #[serde(default)]
+    pub explicit_change: Option<Evidence>,
+    /// 核对可补齐来源中已有的背景或完整链接，不得改变候选含义。
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub quality_issue: Option<String>,
+}
+
+/// 仅阻断明确残缺的操作路径；是否需要环境/机器信息由正文语义决定，不套统一模板。
+pub(crate) fn incomplete_method(content: &str) -> bool {
+    content.split_whitespace().any(|word| {
+        (word.contains(".../") || word.contains("…/"))
+            && (word.contains("http") || word.contains("install.") || word.contains(".sh"))
+    })
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

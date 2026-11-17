@@ -20,6 +20,14 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
+        belongs_to = "super::memories::Entity",
+        from = "(Column::SpaceId, Column::MemoryId)",
+        to = "(super::memories::Column::SpaceId, super::memories::Column::Id)",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    Memories,
+    #[sea_orm(
         belongs_to = "super::transfer_receipts::Entity",
         from = "(Column::SpaceId, Column::PackageId)",
         to = "(super::transfer_receipts::Column::SpaceId, super::transfer_receipts::Column::PackageId)",
@@ -29,9 +37,28 @@ pub enum Relation {
     TransferReceipts,
 }
 
+impl Related<super::memories::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Memories.def()
+    }
+}
+
 impl Related<super::transfer_receipts::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::TransferReceipts.def()
+    }
+}
+
+impl Related<super::spaces::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::transfer_receipts::Relation::Spaces.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(
+            super::transfer_receipts::Relation::MemoryImports
+                .def()
+                .rev(),
+        )
     }
 }
 

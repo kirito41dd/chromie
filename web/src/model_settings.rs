@@ -228,6 +228,18 @@ pub fn error_label(code: &str) -> &str {
         "model_server_error" => "模型服务暂时故障，后台会自动重试。",
         "model_batch_response" => "批量请求或返回格式不匹配，请调小每批文本数后保存。",
         "model_response" => "模型接口或返回格式不匹配。",
+        "model_output_truncated" => {
+            "输出达到长度上限，请增加输出预算或减少每批数量；本批未写入记忆。"
+        }
+        "model_http_json" => "模型 HTTP 响应不是有效 JSON，请检查兼容接口。",
+        "model_output_json" => "模型生成的内容不是有效 JSON，本批未写入记忆。",
+        "model_output_schema" => "模型输出字段不符合约定，本批未写入记忆。",
+        "model_evidence_invalid" => "模型引用、证据或范围校验失败，本批未写入记忆。",
+        "model_response_too_large" => "模型响应超过大小上限，请减少每批数量。",
+        "model_finish_reason" | "model_output_missing" => {
+            "模型未正常完成文本输出，本批未写入记忆。"
+        }
+        "model_request_rejected" => "模型接口拒绝请求，请核对接口和模型配置。",
         "model_dimensions" => "向量维度或数值无效，请核对模型配置。",
         "model_settings_changed" => "配置已变化，请刷新页面核对后重新保存。",
         "model_rebuild_confirmation_required" => "更换模型需要确认全量重建。",

@@ -14,6 +14,10 @@ pub struct Model {
     pub revision: i32,
     pub useful: Option<i8>,
     pub evaluated_at: Option<TimeDateTime>,
+    pub use_outcome: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub use_reason: Option<String>,
+    pub used_at: Option<TimeDateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

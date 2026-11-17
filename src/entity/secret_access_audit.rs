@@ -22,6 +22,35 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::agent_connections::Entity",
+        from = "(Column::SpaceId, Column::AgentId)",
+        to = "(super::agent_connections::Column::SpaceId, super::agent_connections::Column::Id)",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    AgentConnections,
+    #[sea_orm(
+        belongs_to = "super::memories::Entity",
+        from = "(Column::SpaceId, Column::MemoryId)",
+        to = "(super::memories::Column::SpaceId, super::memories::Column::Id)",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    Memories,
+}
+
+impl Related<super::agent_connections::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentConnections.def()
+    }
+}
+
+impl Related<super::memories::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Memories.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}

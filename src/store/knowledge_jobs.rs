@@ -35,6 +35,8 @@ pub(super) struct Snapshot {
     pub kind: JobKind,
     pub memories: Vec<MemorySnapshot>,
     pub events: Vec<EventSnapshot>,
+    #[serde(default)]
+    pub usage: Vec<super::use_reports::UseEvidence>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -66,7 +68,7 @@ impl Store {
     pub async fn enqueue_knowledge(&self, space: SpaceId, input: Queue) -> Result<Value> {
         if input.memory_ids.len() > 10
             || input.event_ids.len() > 10
-            || (input.kind == JobKind::Organize && !input.event_ids.is_empty())
+            || (input.kind != JobKind::Extract && !input.event_ids.is_empty())
             || (input.kind == JobKind::Extract && input.event_ids.is_empty())
         {
             return Err(Error::invalid(
@@ -129,9 +131,10 @@ impl Store {
             automatic,
             memories: vec![],
             events: vec![],
+            usage: vec![],
         };
         for id in ids {
-            if snapshot.memories.len() == if snapshot.automatic.is_some() { 20 } else { 10 } {
+            if snapshot.memories.len() == if snapshot.automatic.is_some() { 64 } else { 10 } {
                 break;
             }
             let head = Self::head(tx, space, id).await?;
@@ -182,7 +185,20 @@ impl Store {
                 .cmp(&b.occurred_at)
                 .then(a.event_id.cmp(&b.event_id))
         });
-        if input.kind == JobKind::Organize && snapshot.memories.is_empty() {
+        if input.kind == JobKind::Maintain {
+            snapshot.usage = Self::usage_evidence(
+                tx,
+                space,
+                &snapshot
+                    .memories
+                    .iter()
+                    .filter(|m| m.memory_type == crate::knowledge::MemoryType::Note)
+                    .map(|m| (m.id, m.revision))
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        }
+        if input.kind != JobKind::Extract && snapshot.memories.is_empty() {
             return Err(Error::invalid("当前没有可整理的普通记忆"));
         }
         let payload = serde_json::to_value(&snapshot).map_err(|_| Error::unavailable())?;
@@ -223,7 +239,12 @@ impl Store {
             for action in ["create", "propose_revision", "skip", "defer"] {
                 counts.insert(
                     action.into(),
-                    json!(decisions.iter().filter(|d| d["action"] == action).count()),
+                    json!(
+                        decisions
+                            .iter()
+                            .filter(|d| d["action"] == action && d["resolution"] != "superseded")
+                            .count()
+                    ),
                 );
             }
             counts.insert(
@@ -269,7 +290,7 @@ impl Store {
             .await?
             .is_some_and(|row| row.enabled != 0);
         Ok(
-            json!({"organization":self.organization_status(space).await?,"extraction":self.extraction_status(space).await?,"enabled":enabled,"jobs":rows.iter().map(Self::job_view).collect::<Vec<_>>()}),
+            json!({"organization":self.organization_status(space).await?,"extraction":self.extraction_status(space).await?,"maintenance":self.maintenance_status(space).await?,"enabled":enabled,"jobs":rows.iter().map(Self::job_view).collect::<Vec<_>>()}),
         )
     }
 
@@ -279,6 +300,15 @@ impl Store {
         space: SpaceId,
     ) -> Result<()> {
         Self::release_extraction(db, Some(space)).await?;
+        Self::release_maintenance(db, Some(space)).await?;
+        crate::entity::recall_items::Entity::update_many()
+            .col_expr(
+                crate::entity::recall_items::Column::UseReason,
+                Expr::value(None::<String>),
+            )
+            .filter(crate::entity::recall_items::Column::SpaceId.eq(space.bytes()))
+            .exec(db)
+            .await?;
         Self::clear_conversation_titles(db, space).await?;
         use crate::entity::organization_items as items;
         items::Entity::update_many()

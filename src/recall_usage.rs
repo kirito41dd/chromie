@@ -21,6 +21,48 @@ pub struct MemoryUsage {
     pub web_recall_count: u64,
     pub last_recalled_at: Option<String>,
     pub evaluated_revision: i32,
+    pub used_count: u64,
+    pub succeeded_count: u64,
+    pub outdated_count: u64,
+    pub environment_blocked_count: u64,
+    pub unverified_count: u64,
+}
+
+/// 仅表示来源 Agent 的使用报告，不等于独立验证，也不决定该记忆的事实真伪。
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UseOutcome {
+    Succeeded,
+    ContentOutdated,
+    EnvironmentBlocked,
+    Unverified,
+}
+impl UseOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::ContentOutdated => "content_outdated",
+            Self::EnvironmentBlocked => "environment_blocked",
+            Self::Unverified => "unverified",
+        }
+    }
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        match value {
+            "succeeded" => Ok(Self::Succeeded),
+            "content_outdated" => Ok(Self::ContentOutdated),
+            "environment_blocked" => Ok(Self::EnvironmentBlocked),
+            "unverified" => Ok(Self::Unverified),
+            _ => Err(Error::unavailable()),
+        }
+    }
+}
+#[derive(Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryUse {
+    pub memory_id: Uuid,
+    pub outcome: UseOutcome,
+    /// 公开简短原因；不附日志、正文或凭据。修订与 Agent 身份由原召回记录确定。
+    pub reason: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -29,10 +71,16 @@ pub struct RecallEvaluation {
     pub recall_id: Uuid,
     /// 本次召回中实际做过判断的 ID；未评价的不要填写。
     #[schemars(length(max = 10))]
+    #[serde(default)]
     pub evaluated_memory_ids: Vec<Uuid>,
     /// 对当前任务有帮助的 ID，必须是 evaluated_memory_ids 的子集。
     #[schemars(length(max = 10))]
+    #[serde(default)]
     pub useful_memory_ids: Vec<Uuid>,
+    /// 只报告确实使用的条目，与“有用”判断独立；任务结束时报告最终观察。
+    #[serde(default)]
+    #[schemars(length(max = 10))]
+    pub usage: Vec<MemoryUse>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -62,6 +110,21 @@ impl FeedbackRecall {
                 return Err(Error::invalid(
                     "评价 ID 必须唯一，每次最多 10 条，有用条目须属于已评价条目",
                 ));
+            }
+            let mut used = HashSet::new();
+            if item.usage.len() > 10 {
+                return Err(Error::invalid("每次最多报告10条实际使用记录"));
+            }
+            for usage in &item.usage {
+                if !used.insert(usage.memory_id)
+                    || usage.reason.as_ref().is_some_and(|r| {
+                        r.trim().is_empty() || r.len() > 512 || r.chars().any(|c| c.is_control())
+                    })
+                {
+                    return Err(Error::invalid(
+                        "使用条目须唯一，原因须为不含控制字符的1～512字节公开说明",
+                    ));
+                }
             }
         }
         Ok(())

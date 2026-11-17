@@ -27,15 +27,19 @@ impl Store {
                 self.search.delete(space, id).await
             } else {
                 let revision = Self::revision(&tx, &head).await?;
-                self.search
-                    .upsert(
-                        space,
-                        id,
-                        head.current_revision,
-                        revision.content.as_deref().ok_or_else(Error::missing)?,
-                        revision.project_key.as_deref(),
-                    )
-                    .await
+                if revision.memory_type == "topic_alias" {
+                    self.search.delete(space, id).await
+                } else {
+                    self.search
+                        .upsert(
+                            space,
+                            id,
+                            head.current_revision,
+                            revision.content.as_deref().ok_or_else(Error::missing)?,
+                            revision.project_key.as_deref(),
+                        )
+                        .await
+                }
             };
             let mut active = task.clone().into_active_model();
             active.updated_at = Set(now());

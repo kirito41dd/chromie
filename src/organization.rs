@@ -8,7 +8,14 @@ pub struct Save {
     pub enabled: bool,
     #[serde(default)]
     pub extraction_enabled: bool,
+    #[serde(default)]
+    pub maintenance_enabled: bool,
+    #[serde(default = "default_maintenance_interval")]
+    pub maintenance_interval_hours: u32,
     pub batch_size: u32,
     pub interval_seconds: u32,
     pub daily_limit: u32,
+}
+fn default_maintenance_interval() -> u32 {
+    24
 }

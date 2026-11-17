@@ -39,3 +39,5 @@ pub mod organization_settings;
 pub mod conversation_metadata;
 pub mod conversation_titles;
 pub mod extraction_items;
+
+pub mod maintenance_items;

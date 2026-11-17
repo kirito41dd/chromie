@@ -137,14 +137,44 @@ impl Store {
     ) -> Result<()> {
         let mut queue: VecDeque<Uuid> = affected.iter().copied().collect();
         while let Some(id) = queue.pop_front() {
+            // 别名只是同一主题的旧入口，随目标遗忘；普通 reference 仍不扩大遗忘范围。
+            let aliases = memory_links::Entity::find()
+                .filter(memory_links::Column::SpaceId.eq(space.bytes()))
+                .filter(memory_links::Column::TargetId.eq(id.as_bytes().to_vec()))
+                .filter(memory_links::Column::Relation.eq(Relation::Reference.as_str()))
+                .all(db)
+                .await?;
+            for alias in aliases {
+                let dependent = uuid_from_bytes(&alias.memory_id)?;
+                let head = Self::head(db, space, dependent).await?;
+                if head.forgotten_at.is_none()
+                    && head.current_revision == alias.revision
+                    && Self::revision(db, &head).await?.memory_type == "topic_alias"
+                    && affected.insert(dependent)
+                {
+                    queue.push_back(dependent);
+                }
+            }
             let rows = memory_links::Entity::find()
                 .filter(memory_links::Column::SpaceId.eq(space.bytes()))
                 .filter(memory_links::Column::TargetId.eq(id.as_bytes().to_vec()))
-                .filter(memory_links::Column::Relation.eq(Relation::DerivedFrom.as_str()))
+                .filter(
+                    memory_links::Column::Relation
+                        .is_in([Relation::DerivedFrom.as_str(), Relation::Reference.as_str()]),
+                )
                 .all(db)
                 .await?;
             for row in rows {
                 let dependent = uuid_from_bytes(&row.memory_id)?;
+                if row.relation == Relation::Reference.as_str() {
+                    let head = Self::head(db, space, dependent).await?;
+                    if head.current_revision != row.revision
+                        || Self::revision(db, &head).await?.memory_type
+                            != MemoryType::TopicAlias.as_str()
+                    {
+                        continue;
+                    }
+                }
                 if affected.insert(dependent) {
                     queue.push_back(dependent);
                 }
@@ -187,7 +217,10 @@ impl Store {
                     .filter(|v| v.relation == Relation::DerivedFrom),
             );
         }
-        Ok(json!({"outgoing_count":count,"needs_review":changed}))
+        let pending = Self::pending_revisions(db, space, id, revision).await?;
+        Ok(
+            json!({"outgoing_count":count,"needs_review":changed || pending > 0,"pending_revisions":pending}),
+        )
     }
 
     pub async fn navigation(&self, space: SpaceId, input: Navigation) -> Result<Value> {

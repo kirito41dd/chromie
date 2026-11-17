@@ -19,11 +19,38 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "super::memory_imports::Entity")]
     MemoryImports,
+    #[sea_orm(
+        belongs_to = "super::spaces::Entity",
+        from = "Column::SpaceId",
+        to = "super::spaces::Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    Spaces,
 }
 
 impl Related<super::memory_imports::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::MemoryImports.def()
+    }
+}
+
+impl Related<super::spaces::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Spaces.def()
+    }
+}
+
+impl Related<super::memories::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::memory_imports::Relation::Memories.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(
+            super::memory_imports::Relation::TransferReceipts
+                .def()
+                .rev(),
+        )
     }
 }
 

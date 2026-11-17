@@ -70,6 +70,7 @@ impl Store {
             .ok_or_else(Error::missing)?;
         let memory_query = memories::Entity::find()
             .filter(memories::Column::SpaceId.eq(space.bytes()))
+            .filter(Self::visible_memory_head())
             .filter(memories::Column::ForgottenAt.is_null());
         let memory_count = memory_query.clone().count(&tx).await?;
         let secret_count = secrets::Entity::find()

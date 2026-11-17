@@ -203,11 +203,15 @@ impl Store {
             return Err(model_error("核对未覆盖全部候选"));
         }
         let mut seen = HashSet::new();
+        let mut targets = HashMap::new();
         for d in &decisions {
             if d.candidate_index >= review.candidates.len() || !seen.insert(d.candidate_index) {
                 return Err(model_error("核对候选编号无效"));
             }
             crate::types::bounded(&d.reason, 1000)?;
+            if let Some(replacement) = &d.replacement {
+                *targets.entry(replacement.memory_id).or_insert(0usize) += 1;
+            }
         }
         decisions.sort_by_key(|d| d.candidate_index);
         let (tx, current) = self.extraction_commit(row, lease, snapshot).await?;
@@ -216,6 +220,23 @@ impl Store {
         let mut records = vec![];
         for mut d in decisions {
             let candidate = &review.candidates[d.candidate_index];
+            let content = d.content.as_deref().unwrap_or(&candidate.content);
+            crate::types::bounded(content, 16000)?;
+            if let Some(issue) = &d.quality_issue {
+                crate::types::bounded(issue, 1000)?;
+                d.action = Action::Defer;
+                d.reason = issue.clone();
+                d.replacement = None;
+            }
+            if crate::extraction::incomplete_method(content)
+                || d.replacement
+                    .as_ref()
+                    .is_some_and(|r| crate::extraction::incomplete_method(&r.content))
+            {
+                d.action = Action::Defer;
+                d.reason = "操作链接或路径含省略，无法独立使用；须从真实来源补齐".into();
+                d.replacement = None;
+            }
             if let Some(reason) = review.rejected.get(&d.candidate_index) {
                 d.action = Action::Defer;
                 d.reason = reason.clone();
@@ -223,6 +244,15 @@ impl Store {
             }
             let mut source_refs = candidate.source_refs.clone();
             let mut evidence = candidate.evidence.clone();
+            if let Some(proof) = &d.explicit_change
+                && !d
+                    .evidence
+                    .iter()
+                    .chain(evidence.iter())
+                    .any(|e| e.event_id == proof.event_id && e.quote == proof.quote)
+            {
+                d.evidence.push(proof.clone());
+            }
             if d.evidence.len() > 4 {
                 return Err(model_error("补充证据数量超限"));
             }
@@ -282,7 +312,7 @@ impl Store {
                 let duplicate = snapshot
                     .memories
                     .iter()
-                    .any(|m| normalize(&m.content) == normalize(&candidate.content));
+                    .any(|m| normalize(&m.content) == normalize(content));
                 if duplicate {
                     d.action = Action::Skip;
                     d.reason = "已有相同正文，无需重复写入".into();
@@ -293,7 +323,7 @@ impl Store {
                             space,
                             crate::types::Remember {
                                 request_id: Uuid::now_v7(),
-                                content: candidate.content.clone(),
+                                content: content.to_owned(),
                                 scope: project
                                     .clone()
                                     .map(|project_key| crate::types::Scope::Project { project_key })
@@ -311,6 +341,7 @@ impl Store {
                     created = Some(id);
                 }
             }
+            let mut receipt = None;
             if d.action == Action::ProposeRevision {
                 let replacement = d
                     .replacement
@@ -332,13 +363,55 @@ impl Store {
                     d.replacement = None;
                 } else {
                     old = Some(target.content.clone());
+                    if normalize(&target.content) == normalize(&replacement.content) {
+                        d.action = Action::Skip;
+                        d.reason = "当前正文已包含相同更正，无需重复增加修订".into();
+                        d.replacement = None;
+                    }
                 }
+            }
+            if d.action == Action::ProposeRevision
+                && let Some(proof) = &d.explicit_change
+                && let Some(replacement) = &d.replacement
+                && targets.get(&replacement.memory_id) == Some(&1)
+                && Self::explicit_change_is_current(
+                    &tx,
+                    space,
+                    snapshot,
+                    replacement,
+                    proof,
+                    &source_refs,
+                )
+                .await?
+            {
+                receipt = Some(
+                    self.apply_replacement_tx(
+                        &tx,
+                        space,
+                        replacement.clone(),
+                        &source_refs,
+                        format!("后台按用户明确更正自动修订：{}", d.reason),
+                    )
+                    .await?,
+                );
+                let version: i32 = serde_json::from_value(
+                    receipt.as_ref().ok_or_else(Error::unavailable)?["revision"].clone(),
+                )
+                .map_err(|_| Error::unavailable())?;
+                Self::mark_automatic_revision(
+                    &tx,
+                    space,
+                    replacement.memory_id,
+                    version,
+                    uuid_from_bytes(&row.id)?,
+                )
+                .await?;
             }
             let evidence_details = evidence.iter().map(|proof| {
                 let source = snapshot.events.iter().find(|s| s.event_id == proof.event_id);
                 json!({"event_id":proof.event_id,"quote":proof.quote,"role":source.map(|s|s.role.as_str()),"occurred_at":source.map(|s|s.occurred_at.as_str())})
             }).collect::<Vec<_>>();
-            records.push(json!({"evidence_details":evidence_details,"candidate_index":d.candidate_index,"action":d.action,"reason":d.reason,"content":candidate.content,"category":candidate.category,"source_refs":source_refs,"evidence":evidence,"replacement":d.replacement,"previous_content":old,"published_memory_id":created,"applied":false}));
+            records.push(json!({"evidence_details":evidence_details,"candidate_index":d.candidate_index,"action":d.action,"reason":d.reason,"content":content,"category":candidate.category,"source_refs":source_refs,"evidence":evidence,"replacement":d.replacement,"previous_content":old,"published_memory_id":created,"applied":receipt.is_some(),"resolution":if receipt.is_some(){Some("automatic")}else{None},"receipt":receipt}));
         }
         // 无主要事项时保留原名/消息摘要，不让命名阻塞消息消费。
         if let Some(title) = &review.conversation_title {
@@ -352,7 +425,7 @@ impl Store {
         result["pending_revisions"] = json!(
             records
                 .iter()
-                .filter(|r| r["action"] == "propose_revision")
+                .filter(|r| r["action"] == "propose_revision" && r["applied"] != true)
                 .count()
         );
         result["retrieval_partial"] = json!(review.retrieval_partial);
@@ -373,7 +446,7 @@ impl Store {
     }
 }
 fn model_error(message: &'static str) -> Error {
-    crate::text_model::error("model_response", message)
+    crate::text_model::error("model_evidence_invalid", message)
 }
 fn normalize(s: &str) -> String {
     s.split_whitespace().collect::<String>()

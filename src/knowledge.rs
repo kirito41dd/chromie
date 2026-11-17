@@ -11,6 +11,8 @@ pub enum MemoryType {
     #[default]
     Note,
     Topic,
+    /// 合并后的旧主题入口；保留修订历史，以一条普通引用指向有效主题。
+    TopicAlias,
 }
 
 impl MemoryType {
@@ -22,6 +24,7 @@ impl MemoryType {
         match self {
             Self::Note => "note",
             Self::Topic => "topic",
+            Self::TopicAlias => "topic_alias",
         }
     }
     #[cfg(feature = "server")]
@@ -29,6 +32,7 @@ impl MemoryType {
         match value {
             "note" => Ok(Self::Note),
             "topic" => Ok(Self::Topic),
+            "topic_alias" => Ok(Self::TopicAlias),
             _ => Err(Error::unavailable()),
         }
     }

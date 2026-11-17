@@ -147,6 +147,39 @@ impl Bundle {
                 }
             }
         }
+        // 别名结构、范围与终点在预览前校验，不能预览通过后才在导入事务末尾失败。
+        let records = self
+            .records
+            .iter()
+            .map(|r| (r.memory_id, r))
+            .collect::<HashMap<_, _>>();
+        for alias in self
+            .records
+            .iter()
+            .filter(|r| r.memory_type == crate::knowledge::MemoryType::TopicAlias)
+        {
+            let mut row = alias;
+            let mut seen = HashSet::new();
+            while row.memory_type == crate::knowledge::MemoryType::TopicAlias {
+                if !seen.insert(row.memory_id)
+                    || seen.len() > 64
+                    || row.links.len() != 1
+                    || row.links[0].relation != crate::knowledge::Relation::Reference
+                {
+                    return Err(invalid_package());
+                }
+                row = records
+                    .get(&row.links[0].memory_id)
+                    .copied()
+                    .ok_or_else(invalid_package)?;
+                if row.project_key != alias.project_key || row.secret.is_some() {
+                    return Err(invalid_package());
+                }
+            }
+            if row.memory_type != crate::knowledge::MemoryType::Topic {
+                return Err(invalid_package());
+            }
+        }
         // 预览前拒绝派生环及 Secret 依据，不能等到确认时才发现无法导入。
         let secret_ids: HashSet<_> = self
             .records
@@ -360,6 +393,41 @@ mod tests {
                 }),
             }],
         }
+    }
+    #[test]
+    fn topic_aliases_must_have_a_complete_scoped_acyclic_destination_before_preview() {
+        use crate::knowledge::{Link, MemoryType, Relation};
+        let mut value = bundle();
+        value.version = 2;
+        value.records[0].secret = None;
+        value.records[0].memory_type = MemoryType::Topic;
+        let target = value.records[0].memory_id;
+        value.records.push(Record {
+            memory_id: Uuid::now_v7(),
+            source_revision: 1,
+            memory_type: MemoryType::TopicAlias,
+            content: "合并前的主题入口".into(),
+            project_key: None,
+            secret: None,
+            links: vec![Link {
+                memory_id: target,
+                relation: Relation::Reference,
+                revision: None,
+            }],
+        });
+        assert!(value.validate().is_ok());
+        value.records[1].links.clear();
+        assert!(
+            value.validate().is_err(),
+            "悬空别名不能先预览成功再导入失败"
+        );
+        value.records[1].links = vec![Link {
+            memory_id: target,
+            relation: Relation::Reference,
+            revision: None,
+        }];
+        value.records[0].memory_type = MemoryType::Note;
+        assert!(value.validate().is_err());
     }
     #[test]
     fn age_package_preserves_bytes_and_rejects_password_tampering_and_truncation() {

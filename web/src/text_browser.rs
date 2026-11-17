@@ -54,6 +54,7 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
     ui.on_text_model_edited(|| {
         if let Some((ui, _, state)) = active() {
             state.borrow_mut().dirty = true;
+            ui.set_text_model_dirty(true);
             ui.set_text_model_notice("".into());
             ui.set_text_model_error("".into());
         }
@@ -61,10 +62,7 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
     ui.on_text_model_save(|| configure("save"));
     ui.on_text_model_test(|| configure("test"));
     ui.on_text_model_reload(|| {
-        if let Some((_, _, state)) = active() {
-            state.borrow_mut().dirty = false;
-            launch("reload", json!({}));
-        }
+        launch("reload", json!({}));
     });
     ui.on_text_model_disable(|| {
         if let Some((_, _, state)) = active() {
@@ -90,6 +88,10 @@ pub(crate) fn clear() {
         s.baseline = None;
 
         ui.set_text_model_busy(false);
+        ui.set_text_model_loaded(false);
+        ui.set_text_model_configured(false);
+        ui.set_text_model_enabled(false);
+        ui.set_text_model_dirty(false);
         ui.set_text_model_error("".into());
         ui.set_text_model_notice("".into());
         ui.set_text_jobs_busy(false);
@@ -101,6 +103,7 @@ pub(crate) fn clear() {
         ui.set_text_jobs_failure("".into());
         ui.set_text_jobs_result("".into());
         ui.set_extraction_jobs(slint::ModelRc::default());
+        ui.set_maintenance_jobs(slint::ModelRc::default());
     }
 }
 
@@ -262,13 +265,16 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
     match operation.as_str() {
         "read" | "reload" | "save" | "disable" => {
             let mut s = state.borrow_mut();
-            let preserve = operation == "read" && s.dirty;
+            let preserve = matches!(operation.as_str(), "read" | "disable") && s.dirty;
             let same = s.baseline.as_ref().is_some_and(|old| {
                 crate::model_settings::text_edit_base(old)
                     == crate::model_settings::text_edit_base(&value)
             });
             s.loaded = true;
-            if preserve && !same {
+            ui.set_text_model_loaded(true);
+            ui.set_text_model_configured(value["revision"].as_i64().unwrap_or(0) > 0);
+            ui.set_text_model_enabled(value["enabled"] == true);
+            if preserve && operation == "read" && !same {
                 ui.set_text_model_error(
                     "用途配置已在其他位置变更，草稿已保留；重新载入会放弃当前草稿。".into(),
                 );
@@ -278,6 +284,7 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
             s.baseline = Some(value.clone());
             if !preserve {
                 s.dirty = false;
+                ui.set_text_model_dirty(false);
                 crate::provider_browser::select_text(value["provider_id"].as_str());
                 ui.set_text_model_enabled(value["enabled"] == true);
                 ui.set_text_model_name(value["model"].as_str().unwrap_or_default().into());
@@ -301,12 +308,11 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
             if operation == "reload" {
                 ui.set_text_model_notice("已载入最新配置。".into());
             } else if operation != "read" {
-                crate::provider_browser::reload_organization();
                 ui.set_text_model_notice(
                     if operation == "save" {
-                        "已保存并启用，后台按自动整理设置运行。"
+                        "模型配置已保存。自动任务按下方已保存的选项运行。"
                     } else {
-                        "已停用，已有记忆保持可用。"
+                        "已暂停后续模型调用，任务选择和处理进度保留。"
                     }
                     .into(),
                 );
@@ -364,6 +370,24 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
                 )
                 .into(),
             );
+            let maintenance = &value["maintenance"];
+            ui.set_text_jobs_automatic(
+                format!(
+                    "{}\n定期维护：{} · 本周期已核对 {} / {} 条 · 失败 {}",
+                    ui.get_text_jobs_automatic(),
+                    match maintenance["state"].as_str().unwrap_or_default() {
+                        "paused" => "未开启",
+                        "unconfigured" => "等待模型",
+                        "idle" => "等待下个周期",
+                        "budget_limited" => "今日额度已用完",
+                        _ => "分批核对中",
+                    },
+                    maintenance["completed"].as_u64().unwrap_or(0),
+                    maintenance["total"].as_u64().unwrap_or(0),
+                    maintenance["failed"].as_u64().unwrap_or(0)
+                )
+                .into(),
+            );
             let jobs = value["jobs"]
                 .as_array()
                 .cloned()
@@ -388,10 +412,14 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
                     "{} · {}",
                     if job["kind"] == "extract" {
                         "消息提炼"
+                    } else if job["kind"] == "maintain" {
+                        "定期维护"
                     } else {
                         "主题整理"
                     },
                     if job["state"] == "done"
+                        && job["result"]["pending_revisions"].as_u64().unwrap_or(0) == 0
+                        && job["result"]["counts"]["applied"].as_u64().unwrap_or(0) == 0
                         && job["result"]["memory_ids"]
                             .as_array()
                             .is_some_and(Vec::is_empty)
@@ -418,14 +446,17 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
                     "{} · {}",
                     if job["kind"] == "extract" {
                         "消息提炼"
+                    } else if job["kind"] == "maintain" {
+                        "定期维护"
                     } else {
                         "主题整理"
                     },
                     if job["state"] == "done" {
                         if job["kind"] == "extract" && job["result"]["has_review"] == true {
                             format!(
-                                "新增 {} · 待修订 {} · 暂缓 {}",
+                                "新增 {} · 已修订 {} · 待修订 {} · 暂缓 {}",
                                 job["result"]["counts"]["create"],
+                                job["result"]["counts"]["applied"].as_u64().unwrap_or(0),
                                 job["result"]["pending_revisions"].as_u64().unwrap_or(0),
                                 job["result"]["counts"]["defer"]
                             )
@@ -442,6 +473,22 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
                     && let Some(message) = job["result"]["error"]["message"].as_str()
                 {
                     detail.push(message.to_owned());
+                    if let Some(phase) = job["result"]["diagnostic"]["phase"].as_str() {
+                        detail.push(format!(
+                            "阶段：{} · 错误：{} · 快照 {} 字节",
+                            match phase {
+                                "extract" => "候选生成",
+                                "review" => "候选核对",
+                                _ => "主题整理",
+                            },
+                            job["result"]["diagnostic"]["code"]
+                                .as_str()
+                                .unwrap_or_default(),
+                            job["result"]["diagnostic"]["snapshot_bytes"]
+                                .as_u64()
+                                .unwrap_or(0)
+                        ));
+                    }
                 }
                 for conflict in job["result"]["conflicts"]
                     .as_array()

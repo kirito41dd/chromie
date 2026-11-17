@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     agent::KeyKind,
     entity::{recall_items, recall_runs},
-    recall_usage::{FeedbackRecall, MemoryOrder, MemoryUsage},
+    recall_usage::{FeedbackRecall, MemoryOrder, MemoryUsage, UseOutcome},
     types::timestamp,
 };
 use sea_orm::sea_query::{Expr, ExprTrait};
@@ -85,6 +85,9 @@ impl Store {
                 revision: Set(revision),
                 useful: Set(None),
                 evaluated_at: Set(None),
+                use_outcome: Set(None),
+                use_reason: Set(None),
+                used_at: Set(None),
             }
             .insert(&tx)
             .await?;
@@ -104,6 +107,8 @@ impl Store {
         let tx = self.begin(space).await?;
         let mut recorded = 0_u32;
         let mut replayed = 0_u32;
+        let mut usage_recorded = 0_u32;
+        let mut usage_replayed = 0_u32;
         for evaluation in input.recalls {
             let run = recall_runs::Entity::find_by_id((
                 space.bytes(),
@@ -145,9 +150,56 @@ impl Store {
                     recorded += 1;
                 }
             }
+            for report in evaluation.usage {
+                let id = report.memory_id;
+                let head = Self::head(&tx, space, id).await?;
+                if head.forgotten_at.is_some() {
+                    return Err(Error::missing());
+                }
+                let row = recall_items::Entity::find_by_id((
+                    space.bytes(),
+                    run.id.clone(),
+                    id.as_bytes().to_vec(),
+                ))
+                .one(&tx)
+                .await?
+                .ok_or_else(Error::missing)?;
+                if let Some(previous) = row.use_outcome.as_deref() {
+                    let previous = UseOutcome::parse(previous)?;
+                    if previous == report.outcome && row.use_reason == report.reason
+                        || previous != UseOutcome::Unverified
+                            && report.outcome == UseOutcome::Unverified
+                    {
+                        usage_replayed += 1;
+                        continue;
+                    }
+                    if previous != UseOutcome::Unverified
+                        || report.outcome == UseOutcome::Unverified
+                    {
+                        return Err(Error::conflict("memory_usage_conflict"));
+                    }
+                }
+                let current_revision = row.revision == head.current_revision;
+                let mut active = row.into_active_model();
+                active.use_outcome = Set(Some(report.outcome.as_str().into()));
+                active.use_reason = Set(report.reason);
+                active.used_at = Set(Some(now()));
+                active.update(&tx).await?;
+                usage_recorded += 1;
+                if current_revision
+                    && matches!(
+                        report.outcome,
+                        UseOutcome::ContentOutdated | UseOutcome::EnvironmentBlocked
+                    )
+                {
+                    Self::request_maintenance(&tx, space, id, head.current_revision).await?;
+                }
+            }
         }
         tx.commit().await?;
-        Ok(json!({"recorded":recorded,"replayed":replayed}))
+        Ok(
+            json!({"recorded":recorded,"replayed":replayed,"usage_recorded":usage_recorded,"usage_replayed":usage_replayed,"usage_evidence":"agent_reported"}),
+        )
     }
 
     /// 一次聚合取当前页面全部记忆，避免逐张卡片重复统计查询。
@@ -237,6 +289,7 @@ impl Store {
                 _ => {}
             }
         }
+        Self::add_use_statistics(db, space, heads, &mut result).await?;
         for (id, at) in last_recalled {
             if let Some(usage) = result.get_mut(&id) {
                 usage.last_recalled_at = Some(timestamp(at)?);
@@ -259,7 +312,8 @@ impl Store {
             .filter(recall_items::Column::SpaceId.eq(space.bytes()))
             .filter(recall_runs::Column::Channel.eq("agent"))
             .filter(recall_runs::Column::CreatedAt.gte(now() - time::Duration::days(30)))
-            .filter(memories::Column::ForgottenAt.is_null());
+            .filter(memories::Column::ForgottenAt.is_null())
+            .filter(Self::visible_memory_head());
         if order == MemoryOrder::Useful {
             query = query.filter(recall_items::Column::Useful.eq(1)).filter(
                 Expr::col((recall_items::Entity, recall_items::Column::Revision))

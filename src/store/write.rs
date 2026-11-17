@@ -23,6 +23,30 @@ impl Store {
             .filter(memory_revisions::Column::Revision.eq(1))
             .exec(db)
             .await?;
+        Self::mark_automatic_revision(db, space, id, 1, job).await?;
+        Ok(())
+    }
+
+    /// 内部回执区分后台发布与人工确认，不以可由调用方填写的 change_reason 判断权限。
+    pub(super) async fn mark_automatic_revision<C: ConnectionTrait>(
+        db: &C,
+        space: SpaceId,
+        id: Uuid,
+        revision: i32,
+        job: Uuid,
+    ) -> Result<()> {
+        write_receipts::ActiveModel {
+            space_id: Set(space.bytes()),
+            operation: Set("background_revision".into()),
+            request_id: Set(Uuid::now_v7().as_bytes().to_vec()),
+            input_hash: Set(Self::hash(&(id, revision, job))?),
+            target_id: Set(id.as_bytes().to_vec()),
+            revision: Set(Some(revision)),
+            created_at: Set(now()),
+            agent_id: Set(None),
+        }
+        .insert(db)
+        .await?;
         Ok(())
     }
     pub async fn capture(&self, space: SpaceId, event: Event) -> Result<Value> {
@@ -157,6 +181,15 @@ impl Store {
         Self::check_sources(tx, space, &input.source_refs).await?;
         let id = Uuid::now_v7();
         Self::check_links(tx, space, id, &input.links, false).await?;
+        Self::check_topic_alias(
+            tx,
+            space,
+            id,
+            input.memory_type,
+            project.as_deref(),
+            &input.links,
+        )
+        .await?;
         let current = now();
         memories::ActiveModel {
             space_id: Set(space.bytes()),
@@ -204,6 +237,18 @@ impl Store {
         tx: &DatabaseTransaction,
         space: SpaceId,
         input: Correct,
+    ) -> Result<Value> {
+        self.correct_with_preserved_links_tx(tx, space, input, &[])
+            .await
+    }
+
+    /// 只有后台已完整读取的主题可额外提供原有依据；新增/改动的派生边仍须指向当前修订。
+    pub(super) async fn correct_with_preserved_links_tx(
+        &self,
+        tx: &DatabaseTransaction,
+        space: SpaceId,
+        input: Correct,
+        preserved: &[crate::knowledge::Link],
     ) -> Result<Value> {
         bounded(&input.reason, 4000)?;
         if input.content.is_none()
@@ -265,7 +310,14 @@ impl Store {
             Some(links) => links.clone(),
             None => Self::links(tx, space, input.memory_id, head.current_revision).await?,
         };
-        Self::check_links(tx, space, input.memory_id, &links, input.links.is_none()).await?;
+        Self::check_links(tx, space, input.memory_id, &links, true).await?;
+        let old_links = Self::links(tx, space, input.memory_id, head.current_revision).await?;
+        let fresh = links
+            .iter()
+            .filter(|link| !old_links.contains(link) && !preserved.contains(link))
+            .cloned()
+            .collect::<Vec<_>>();
+        Self::check_links(tx, space, input.memory_id, &fresh, false).await?;
         let refs = match &input.source_refs {
             Some(refs) => refs
                 .iter()
@@ -290,6 +342,27 @@ impl Store {
             Some(scope) => scope.project()?,
             None => previous.project_key,
         };
+        Self::check_alias_dependents(
+            tx,
+            space,
+            input.memory_id,
+            input
+                .memory_type
+                .unwrap_or(crate::knowledge::MemoryType::parse(&previous.memory_type)?),
+            project.as_deref(),
+        )
+        .await?;
+        Self::check_topic_alias(
+            tx,
+            space,
+            input.memory_id,
+            input
+                .memory_type
+                .unwrap_or(crate::knowledge::MemoryType::parse(&previous.memory_type)?),
+            project.as_deref(),
+            &links,
+        )
+        .await?;
         memory_revisions::ActiveModel {
             space_id: Set(space.bytes()),
             memory_id: Set(head.id.clone()),
@@ -313,6 +386,7 @@ impl Store {
         active.updated_at = Set(now());
         active.update(tx).await?;
         Self::schedule(tx, space, input.memory_id, revision).await?;
+        Self::supersede_proposals(tx, space, input.memory_id, revision).await?;
         self.receipt(
             tx,
             space,

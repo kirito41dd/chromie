@@ -27,10 +27,24 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     AgentConnections,
+    #[sea_orm(has_many = "super::embedding_tasks::Entity")]
+    EmbeddingTasks,
+    #[sea_orm(has_one = "super::maintenance_items::Entity")]
+    MaintenanceItems,
+    #[sea_orm(has_one = "super::memory_imports::Entity")]
+    MemoryImports,
+    #[sea_orm(has_many = "super::memory_links::Entity")]
+    MemoryLinks,
     #[sea_orm(has_many = "super::memory_revisions::Entity")]
     MemoryRevisions,
+    #[sea_orm(has_one = "super::organization_items::Entity")]
+    OrganizationItems,
     #[sea_orm(has_one = "super::outbox_tasks::Entity")]
     OutboxTasks,
+    #[sea_orm(has_many = "super::recall_items::Entity")]
+    RecallItems,
+    #[sea_orm(has_many = "super::secret_access_audit::Entity")]
+    SecretAccessAudit,
     #[sea_orm(has_one = "super::secrets::Entity")]
     Secrets,
     #[sea_orm(
@@ -43,9 +57,27 @@ pub enum Relation {
     Spaces,
 }
 
-impl Related<super::agent_connections::Entity> for Entity {
+impl Related<super::embedding_tasks::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::AgentConnections.def()
+        Relation::EmbeddingTasks.def()
+    }
+}
+
+impl Related<super::maintenance_items::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::MaintenanceItems.def()
+    }
+}
+
+impl Related<super::memory_imports::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::MemoryImports.def()
+    }
+}
+
+impl Related<super::memory_links::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::MemoryLinks.def()
     }
 }
 
@@ -55,9 +87,27 @@ impl Related<super::memory_revisions::Entity> for Entity {
     }
 }
 
+impl Related<super::organization_items::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::OrganizationItems.def()
+    }
+}
+
 impl Related<super::outbox_tasks::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::OutboxTasks.def()
+    }
+}
+
+impl Related<super::recall_items::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::RecallItems.def()
+    }
+}
+
+impl Related<super::secret_access_audit::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::SecretAccessAudit.def()
     }
 }
 
@@ -70,6 +120,24 @@ impl Related<super::secrets::Entity> for Entity {
 impl Related<super::spaces::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Spaces.def()
+    }
+}
+
+impl Related<super::agent_connections::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::secret_access_audit::Relation::AgentConnections.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::secret_access_audit::Relation::Memories.def().rev())
+    }
+}
+
+impl Related<super::transfer_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::memory_imports::Relation::TransferReceipts.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::memory_imports::Relation::Memories.def().rev())
     }
 }
 

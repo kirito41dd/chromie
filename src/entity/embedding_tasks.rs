@@ -33,11 +33,25 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     EmbeddingGenerations,
+    #[sea_orm(
+        belongs_to = "super::memories::Entity",
+        from = "(Column::SpaceId, Column::MemoryId)",
+        to = "(super::memories::Column::SpaceId, super::memories::Column::Id)",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    Memories,
 }
 
 impl Related<super::embedding_generations::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::EmbeddingGenerations.def()
+    }
+}
+
+impl Related<super::memories::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Memories.def()
     }
 }
 

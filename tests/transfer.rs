@@ -353,6 +353,78 @@ async fn confirm(f: &Fixture, bytes: &[u8], preview: &Value) -> Value {
     r.json().await.unwrap()
 }
 
+#[tokio::test]
+#[ignore = "需要两个独立 MySQL；主题别名跨实例保留入口，遗忘后迁移不留下悬空项"]
+async fn topic_aliases_round_trip_and_disappear_with_the_forgotten_destination() {
+    use chromie::knowledge::{Link, MemoryType, Relation};
+    let source = fixture("CHROMIE_TEST_DATABASE_URL", 71).await;
+    let target = fixture("CHROMIE_TRANSFER_TARGET_DATABASE_URL", 72).await;
+    let create = |kind, content: &str, links| Remember {
+        request_id: Uuid::now_v7(),
+        content: content.into(),
+        scope: Scope::Global,
+        source_refs: vec![],
+        memory_type: kind,
+        links,
+    };
+    let note = source
+        .store
+        .remember(
+            source.space,
+            create(MemoryType::Note, "虚构数据库检查方法", vec![]),
+        )
+        .await
+        .unwrap();
+    let note = Uuid::parse_str(note["memory_id"].as_str().unwrap()).unwrap();
+    let topic = source
+        .store
+        .remember(
+            source.space,
+            create(
+                MemoryType::Topic,
+                "虚构数据库主题",
+                vec![Link {
+                    memory_id: note,
+                    relation: Relation::DerivedFrom,
+                    revision: Some(1),
+                }],
+            ),
+        )
+        .await
+        .unwrap();
+    let topic = Uuid::parse_str(topic["memory_id"].as_str().unwrap()).unwrap();
+    let alias = source
+        .store
+        .remember(
+            source.space,
+            create(
+                MemoryType::TopicAlias,
+                "合并前的虚构入口",
+                vec![Link {
+                    memory_id: topic,
+                    relation: Relation::Reference,
+                    revision: None,
+                }],
+            ),
+        )
+        .await
+        .unwrap();
+    let alias = Uuid::parse_str(alias["memory_id"].as_str().unwrap()).unwrap();
+    let bytes = export(&source).await;
+    let plan = preview(&target, &bytes).await;
+    assert_eq!(plan["new"], 3);
+    confirm(&target, &bytes, &plan).await;
+    assert_eq!(get(&target, alias).await["redirect_to"], topic.to_string());
+    forget(&source, topic, 1).await;
+    let bundle = decode(&export(&source).await);
+    assert_eq!(
+        bundle.records.len(),
+        1,
+        "源实例遗忘主题后只能迁移仍有效的普通记忆"
+    );
+    assert_eq!(bundle.records[0].memory_id, note);
+}
+
 async fn preview_page(
     f: &Fixture,
     bytes: &[u8],

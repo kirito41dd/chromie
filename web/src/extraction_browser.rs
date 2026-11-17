@@ -88,10 +88,10 @@ fn launch(operation: &str, index: Option<i32>) {
     });
 }
 pub(crate) fn jobs(ui: &Dashboard, rows: &[Value]) {
-    let mut sorted = rows.iter().collect::<Vec<_>>();
-    sorted.sort_by_key(|j| j["result"]["pending_revisions"].as_u64().unwrap_or(0) == 0);
+    let sorted = crate::memory::pending_first(rows);
     let items = sorted
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|j| j["kind"] == "extract" && j["result"]["has_review"] == true)
         .take(20)
         .map(|j| {
@@ -112,6 +112,30 @@ pub(crate) fn jobs(ui: &Dashboard, rows: &[Value]) {
         })
         .collect::<Vec<_>>();
     ui.set_extraction_jobs(Rc::new(VecModel::from(items)).into());
+    let maintenance = sorted
+        .into_iter()
+        .filter(|j| {
+            matches!(j["kind"].as_str(), Some("maintain" | "organize")) && j["state"] == "done"
+        })
+        .take(20)
+        .map(|j| ExtractionJob {
+            id: j["job_id"].as_str().unwrap_or_default().into(),
+            time: format_time(j["created_at"].as_str().unwrap_or_default()).into(),
+            label: format!(
+                "{} · 主题 {} · 合并 {} · 待修订 {}",
+                if j["kind"] == "maintain" {
+                    "定期维护"
+                } else {
+                    "增量整理"
+                },
+                j["result"]["topic_changes"].as_array().map_or(0, Vec::len),
+                j["result"]["merged_topics"].as_array().map_or(0, Vec::len),
+                j["result"]["pending_revisions"].as_u64().unwrap_or(0)
+            )
+            .into(),
+        })
+        .collect::<Vec<_>>();
+    ui.set_maintenance_jobs(Rc::new(VecModel::from(maintenance)).into());
 }
 pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str) {
     let mut refresh = false;
@@ -152,22 +176,28 @@ pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str)
                     if result["retrieval_partial"] == true {
                         "已完成。相关记忆检索范围有限；修订确认时仍会检查当前版本。"
                     } else {
-                        "已完成。修订仅在确认后写入，保留历史版本。"
+                        "已完成。主题已自动更新；普通记忆建议确认后写入并保留历史。使用报告仅代表 Agent 观察。"
                     }
                 } else {
                     "尚未完成核对；请稍后刷新。"
                 }
                 .into(),
             );
-            let rows = result["decisions"]
+            let mut rows = result["decisions"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .map(|d| {
-                    let action = match d["action"].as_str().unwrap_or_default() {
-                        "create" => "已新增",
-                        "propose_revision" => "建议修订",
-                        "skip" => "已跳过",
+                    let action = match (
+                        d["action"].as_str().unwrap_or_default(),
+                        d["resolution"].as_str(),
+                    ) {
+                        (_, Some("superseded")) => "方案已过期",
+                        (_, Some("automatic")) => "已自动修订",
+                        (_, Some("confirmed")) => "已确认修订",
+                        ("create", _) => "已新增",
+                        ("propose_revision", _) => "建议修订",
+                        ("skip", _) => "已跳过",
                         _ => "暂缓",
                     };
                     let evidence = d
@@ -188,10 +218,11 @@ pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str)
                                         "助手 · {}",
                                         e["occurred_at"].as_str().unwrap_or_default()
                                     ),
+                                    Some("agent_reported") => format!("Agent 使用报告（非独立验证） · {}",e["occurred_at"].as_str().unwrap_or_default()),
                                     _ => "来源消息".to_owned(),
                                 },
                                 e["quote"].as_str().unwrap_or_default(),
-                                e["event_id"].as_str().unwrap_or_default()
+                                e["reference"].as_str().or_else(||e["event_id"].as_str()).unwrap_or_default()
                             )
                         })
                         .collect::<Vec<_>>()
@@ -207,11 +238,22 @@ pub(crate) fn receive(operation: &str, generation: u32, status: u16, body: &str)
                             .as_str()
                             .unwrap_or_default()
                             .into(),
-                        can_apply: d["action"] == "propose_revision" && d["applied"] != true,
+                        can_apply: d["action"] == "propose_revision"
+                            && d["applied"] != true
+                            && d["resolution"] != "superseded",
                         applied: d["applied"] == true,
                     }
                 })
                 .collect::<Vec<_>>();
+            for change in result["topic_changes"].as_array().into_iter().flatten() {
+                rows.push(ExtractionDecision{index:-1,action:if change["action"]=="created"{"已新增主题".into()}else{"已更新主题".into()},body:change["title"].as_str().unwrap_or_default().into(),reason:format!("主题 ID：{}",change["memory_id"].as_str().unwrap_or_default()).into(),..Default::default()});
+            }
+            for merge in result["merged_topics"].as_array().into_iter().flatten() {
+                rows.push(ExtractionDecision{index:-1,action:"已合并主题".into(),body:merge["title"].as_str().unwrap_or_default().into(),reason:format!("{} → {}；旧入口仍可跳转，历史保留。",merge["from"].as_str().unwrap_or_default(),merge["to"].as_str().unwrap_or_default()).into(),..Default::default()});
+            }
+            for conflict in result["conflicts"].as_array().into_iter().flatten() {
+                rows.push(ExtractionDecision{index:-1,action:"需要核对".into(),reason:conflict["reason"].as_str().unwrap_or_default().into(),..Default::default()});
+            }
             ui.set_extraction_decisions(Rc::new(VecModel::from(rows)).into());
         }
     });

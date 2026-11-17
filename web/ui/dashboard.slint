@@ -262,18 +262,29 @@ export component Dashboard inherits Window {
     callback provider-save;
     callback provider-edited;
     in property <bool> organization-busy;
+    in property <bool> organization-loaded;
+    in property <bool> organization-dirty;
+    in property <bool> organization-saved-enabled;
+    in property <bool> extraction-saved-enabled;
+    in property <bool> maintenance-saved-enabled;
     in property <string> organization-error;
     in property <string> organization-notice;
     in-out property <bool> organization-enabled;
     in-out property <bool> extraction-enabled;
+    in-out property <bool> maintenance-enabled;
+    in-out property <string> maintenance-hours: "24";
     in-out property <string> organization-batch: "10";
     in-out property <string> organization-interval: "60";
     in-out property <string> organization-limit: "100";
     callback organization-edited;
     callback organization-save;
+    callback organization-reload;
     in property <string> text-jobs-automatic;
 
     in property <bool> text-model-busy;
+    in property <bool> text-model-loaded;
+    in property <bool> text-model-configured;
+    in property <bool> text-model-dirty;
     in property <bool> text-model-enabled;
     in property <string> text-model-error;
     in property <string> text-model-notice;
@@ -295,6 +306,7 @@ export component Dashboard inherits Window {
     callback text-extract;
     callback text-jobs-refresh;
     in property <[ExtractionJob]> extraction-jobs;
+    in property <[ExtractionJob]> maintenance-jobs;
     in property <[ExtractionDecision]> extraction-decisions;
     in property <bool> extraction-open;
     in property <bool> extraction-busy;
@@ -669,6 +681,10 @@ export component Dashboard inherits Window {
                     if root.extraction-jobs.length > 0 && !root.recall-page && !root.access-page && !root.settings-page && !root.transfer-page: ExtractionResults {
                         jobs: root.extraction-jobs; open(id) => { root.extraction-read(id); }
                     }
+                    if root.maintenance-jobs.length > 0 && !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: ExtractionResults {
+                        title: "记忆维护"; description: "整理主题，并根据使用反馈提出修订建议。普通记忆的修订需确认。";
+                        jobs: root.maintenance-jobs; open(id) => { root.extraction-read(id); }
+                    }
                     if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: MemoryColumns {
                         width: page-content.width - 2 * root.page-padding;
                         wide: root.wide; compact: root.compact; fresh: root.fresh;
@@ -707,11 +723,22 @@ export component Dashboard inherits Window {
                     }
                     if root.settings-page && root.can-manage-system: TextModelSettings {
                         busy: root.text-model-busy; enabled: root.text-model-enabled; providers: root.provider-names; provider-index <=> root.text-provider-index;
+                        loaded: root.text-model-loaded; configured: root.text-model-configured; dirty: root.text-model-dirty;
                         error: root.text-model-error; notice: root.text-model-notice;
                         model <=> root.text-model-name;
                         concurrency <=> root.text-model-concurrency; output-tokens <=> root.text-model-output-tokens;
                         edited => { root.text-model-edited(); } save => { root.text-model-save(); }
                         reload => { root.text-model-reload(); } test => { root.text-model-test(); } disable => { root.text-model-disable(); }
+                    }
+                    if root.settings-page && root.can-manage-system: OrganizationSettings {
+                        busy: root.organization-busy; enabled <=> root.organization-enabled; extraction-enabled <=> root.extraction-enabled;
+                        loaded: root.organization-loaded; dirty: root.organization-dirty; model-ready: root.text-model-enabled;
+                        saved-enabled: root.organization-saved-enabled; saved-extraction-enabled: root.extraction-saved-enabled;
+                        saved-maintenance-enabled: root.maintenance-saved-enabled; maintenance-enabled <=> root.maintenance-enabled; maintenance-hours <=> root.maintenance-hours;
+                        batch <=> root.organization-batch; interval <=> root.organization-interval; limit <=> root.organization-limit;
+                        error: root.organization-error; notice: root.organization-notice;
+                        edited => { root.organization-edited(); } save => { root.organization-save(); }
+                        reload => { root.organization-reload(); }
                     }
                     if root.settings-page: ModelSettings {
                         viewport-width: root.width; viewport-height: root.height;
@@ -724,12 +751,6 @@ export component Dashboard inherits Window {
                         similarity <=> root.model-similarity; batch-size <=> root.model-batch-size;
                         advanced <=> root.model-advanced;
                         edited => { root.model-edited(); } reload => { root.model-reload(); } save => { root.model-save(); } test => { root.model-test(); }
-                    }
-                    if root.settings-page && root.can-manage-system: OrganizationSettings {
-                        busy: root.organization-busy; enabled <=> root.organization-enabled; extraction-enabled <=> root.extraction-enabled;
-                        batch <=> root.organization-batch; interval <=> root.organization-interval; limit <=> root.organization-limit;
-                        error: root.organization-error; notice: root.organization-notice;
-                        edited => { root.organization-edited(); } save => { root.organization-save(); }
                     }
                     if root.settings-page && root.can-manage-system: ModelUsage {
                         compact: root.compact; available: root.model-usage-available;

@@ -246,7 +246,7 @@ impl Store {
             .map(|key| self.cipher()?.seal_model(credential_id, 1, key.as_bytes()))
             .transpose()?;
         let existed = previous.is_some();
-        Self::initialize_organization(&tx, !existed).await?;
+        // 连接配置不代表自动处理授权；任务选择只由 save_organization 修改。
         let mut active = previous
             .map(|row| row.into_active_model())
             .unwrap_or_default();

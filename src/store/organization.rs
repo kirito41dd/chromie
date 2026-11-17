@@ -19,6 +19,13 @@ pub(super) fn heads(
     space: Option<SpaceId>,
     project: Option<Option<&str>>,
 ) -> Select<memories::Entity> {
+    head_types(&[kind], space, project)
+}
+pub(super) fn head_types(
+    kinds: &[&str],
+    space: Option<SpaceId>,
+    project: Option<Option<&str>>,
+) -> Select<memories::Entity> {
     let mut revision = Query::select()
         .expr(Expr::val(1))
         .from(memory_revisions::Entity)
@@ -39,7 +46,7 @@ pub(super) fn heads(
                 memory_revisions::Entity,
                 memory_revisions::Column::MemoryType,
             ))
-            .eq(kind),
+            .is_in(kinds.iter().copied()),
         )
         .to_owned();
     if let Some(project) = project {
@@ -112,6 +119,7 @@ fn due(config: i64) -> sea_orm::sea_query::SelectStatement {
                     .add(
                         Condition::any()
                             .add(Expr::col((items::Entity, items::Column::State)).eq("queued"))
+                            .add(Expr::col((items::Entity, items::Column::State)).eq("blocked"))
                             .add(Expr::col((items::Entity, items::Column::RunAfter)).gt(now())),
                     ),
             ),
@@ -119,15 +127,14 @@ fn due(config: i64) -> sea_orm::sea_query::SelectStatement {
     skip
 }
 impl Store {
-    pub(super) async fn initialize_organization<C: ConnectionTrait>(
-        db: &C,
-        enabled: bool,
-    ) -> Result<()> {
+    async fn initialize_organization<C: ConnectionTrait>(db: &C) -> Result<()> {
         settings::Entity::insert(settings::ActiveModel {
             id: Set(1),
             revision: Set(1),
-            enabled: Set(i8::from(enabled)),
+            enabled: Set(0),
             extraction_enabled: Set(0),
+            maintenance_enabled: Set(0),
+            maintenance_interval_hours: Set(24),
             last_kind: Set("organize".into()),
             batch_size: Set(10),
             interval_seconds: Set(60),
@@ -145,16 +152,17 @@ impl Store {
     pub async fn organization_settings(&self, space: SpaceId) -> Result<Value> {
         self.check_model_admin(space).await?;
         let row = settings::Entity::find_by_id(1u8).one(&self.db).await?;
-        Ok(row.map_or_else(||json!({"revision":0,"enabled":false,"extraction_enabled":false,"batch_size":10,"interval_seconds":60,"daily_limit":100,"attempts_today":0}),|row|json!({"revision":row.revision,"enabled":row.enabled!=0,"extraction_enabled":row.extraction_enabled!=0,"batch_size":row.batch_size,"interval_seconds":row.interval_seconds,"daily_limit":row.daily_limit,"attempts_today":if row.usage_date==now().date(){row.attempts_today}else{0}})))
+        Ok(row.map_or_else(||json!({"revision":0,"enabled":false,"extraction_enabled":false,"batch_size":10,"interval_seconds":60,"daily_limit":100,"attempts_today":0,"maintenance_enabled":false,"maintenance_interval_hours":24}),|row|json!({"revision":row.revision,"enabled":row.enabled!=0,"extraction_enabled":row.extraction_enabled!=0,"maintenance_enabled":row.maintenance_enabled!=0,"maintenance_interval_hours":row.maintenance_interval_hours,"batch_size":row.batch_size,"interval_seconds":row.interval_seconds,"daily_limit":row.daily_limit,"attempts_today":if row.usage_date==now().date(){row.attempts_today}else{0}})))
     }
     pub async fn save_organization(&self, space: SpaceId, input: Save) -> Result<Value> {
         self.check_model_admin(space).await?;
-        if !(1..=10).contains(&input.batch_size)
+        if !(1..=168).contains(&input.maintenance_interval_hours)
+            || !(1..=10).contains(&input.batch_size)
             || !(10..=86400).contains(&input.interval_seconds)
             || !(1..=10000).contains(&input.daily_limit)
         {
             return Err(Error::invalid(
-                "每批须为1～10条，间隔10～86400秒，每日尝试上限1～10000次",
+                "每批须为1～10条，间隔10～86400秒，每日尝试上限1～10000次，维护周期1～168小时",
             ));
         }
         let tx = self.db.begin().await?;
@@ -166,7 +174,7 @@ impl Store {
         if old.as_ref().map_or(0, |row| row.revision) != input.expected_revision {
             return Err(Error::conflict("organization_settings_changed"));
         }
-        Self::initialize_organization(&tx, false).await?;
+        Self::initialize_organization(&tx).await?;
         let mut row = settings::Entity::find_by_id(1u8)
             .one(&tx)
             .await?
@@ -178,6 +186,8 @@ impl Store {
             .ok_or_else(Error::unavailable)?);
         row.enabled = Set(i8::from(input.enabled));
         row.extraction_enabled = Set(i8::from(input.extraction_enabled));
+        row.maintenance_enabled = Set(i8::from(input.maintenance_enabled));
+        row.maintenance_interval_hours = Set(input.maintenance_interval_hours);
         row.batch_size = Set(input.batch_size);
         row.interval_seconds = Set(input.interval_seconds);
         row.daily_limit = Set(input.daily_limit);
@@ -207,6 +217,7 @@ impl Store {
             .exec(&tx)
             .await?;
         Self::release_extraction(&tx, None).await?;
+        Self::release_maintenance(&tx, None).await?;
         tx.commit().await?;
         self.organization_settings(space).await
     }
@@ -271,11 +282,24 @@ impl Store {
         }
         let first_revision = Self::revision(&tx, &current).await?;
         let group = Some(first_revision.project_key.as_deref());
+        let previous = items::Entity::find_by_id((space.bytes(), current.id.clone()))
+            .one(&tx)
+            .await?;
+        let batch = if let Some(previous) = previous.filter(|p| {
+            p.config_revision == config.revision
+                && p.last_error
+                    .as_deref()
+                    .is_some_and(crate::text_model::structural_error)
+        }) {
+            Self::smaller_knowledge_batch(&tx, space, previous.job_id, setting.batch_size).await?
+        } else {
+            u64::from(setting.batch_size)
+        };
         let selected = heads("note", Some(space), group)
             .filter(Expr::exists(due(config.revision)).not())
             .order_by_asc(memories::Column::UpdatedAt)
             .order_by_asc(memories::Column::Id)
-            .limit(u64::from(setting.batch_size))
+            .limit(batch)
             .all(&tx)
             .await?;
         if selected.is_empty() {
@@ -308,16 +332,16 @@ impl Store {
         let mut topics = heads("topic", Some(space), group)
             .filter(Expr::exists(related))
             .order_by_desc(memories::Column::UpdatedAt)
-            .limit(6)
+            .limit(54)
             .all(&tx)
             .await?;
         let more = heads("topic", Some(space), group)
-            .order_by_desc(memories::Column::UpdatedAt)
-            .limit(6)
+            .order_by_asc(memories::Column::UpdatedAt)
+            .limit(54)
             .all(&tx)
             .await?;
         for row in more {
-            if topics.len() < 6 && !topics.iter().any(|r| r.id == row.id) {
+            if topics.len() < 54 && !topics.iter().any(|r| r.id == row.id) {
                 topics.push(row);
             }
         }
@@ -409,7 +433,7 @@ impl Store {
             .one(db)
             .await?
             .is_some_and(|r| {
-                (r.enabled != 0 || r.extraction_enabled != 0)
+                (r.enabled != 0 || r.extraction_enabled != 0 || r.maintenance_enabled != 0)
                     && (r.usage_date != now().date() || r.attempts_today < r.daily_limit)
             }))
     }
@@ -437,10 +461,10 @@ impl Store {
                 .one(db)
                 .await?
                 .ok_or_else(Error::unavailable)?;
-            if (if snapshot.kind == JobKind::Extract {
-                row.extraction_enabled == 0
-            } else {
-                row.enabled == 0
+            if (match snapshot.kind {
+                JobKind::Extract => row.extraction_enabled == 0,
+                JobKind::Organize => row.enabled == 0,
+                JobKind::Maintain => row.maintenance_enabled == 0,
             }) || row.revision != automatic.settings_revision
             {
                 return Err(Error::conflict("organization_settings_changed"));
@@ -454,10 +478,18 @@ impl Store {
         state: &str,
         error: Option<&str>,
     ) -> Result<()> {
+        Self::finish_maintenance(db, row, state, error).await?;
         Self::finish_extraction(db, row, state, error).await?;
         if row.automatic == 0 || row.kind != "organize" {
             return Ok(());
         }
+        let structural =
+            state == "failed" && error.is_some_and(crate::text_model::structural_error);
+        let state = if structural && Self::knowledge_work_items(row) <= 1 {
+            "blocked"
+        } else {
+            state
+        };
         items::Entity::update_many()
             .col_expr(items::Column::State, Expr::value(state))
             .col_expr(
@@ -466,7 +498,9 @@ impl Store {
             )
             .col_expr(
                 items::Column::RunAfter,
-                Expr::value(if state == "pending" {
+                Expr::value(if structural {
+                    now() + time::Duration::seconds(30)
+                } else if state == "pending" {
                     now()
                 } else {
                     now() + time::Duration::hours(24)
@@ -496,7 +530,9 @@ impl Store {
             .count(&self.db)
             .await?;
         let mut failed = progress_for_head();
-        failed.and_where(Expr::col((items::Entity, items::Column::State)).eq("failed"));
+        failed.and_where(
+            Expr::col((items::Entity, items::Column::State)).is_in(["failed", "blocked"]),
+        );
         let failed = heads("note", Some(space), None)
             .filter(Expr::exists(failed))
             .count(&self.db)

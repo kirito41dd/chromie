@@ -674,12 +674,12 @@ window.addEventListener("popstate", () => {
 const activeProviders = new Map();
 window.chromieCancelProvider = () => {for (const pending of activeProviders.values()) pending.abort();activeProviders.clear();};
 window.chromieProviderRequest = async (space, operation, payload, generation) => {
-  if (!/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["read","save","organization-read","organization-save"].includes(operation)) {receive_provider(operation,generation,400,"");return;}
+  if (!/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["read","save","organization-read","organization-reload","organization-save"].includes(operation)) {receive_provider(operation,generation,400,"");return;}
   const organization=operation.startsWith("organization");const channel=organization?"organization":"providers";
   activeProviders.get(channel)?.abort();const controller=new AbortController();activeProviders.set(channel,controller);
   const timeout=setTimeout(()=>controller.abort(),20000);
   try {
-    const read=operation.endsWith("read");
+    const read=operation.endsWith("read")||operation==="organization-reload";
     const response=await fetch(`/spaces/${encodeURIComponent(space)}/system/${channel}`,{method:read?"GET":"POST",credentials:"same-origin",mode:"same-origin",redirect:"error",cache:"no-store",signal:controller.signal,...(read?{}:{headers:{"Content-Type":"application/json"},body:payload})});
     payload="";const body=await response.text();
     if(activeProviders.get(channel)===controller) receive_provider(operation,generation,body.length>128*1024?502:response.status,body.length>128*1024?"":body);

@@ -98,10 +98,13 @@ async fn complete(
             ]
         };
         json!({"candidates":candidates,"conversation_title":if input["conversation"].is_null() || mode==10 {Value::Null}else{json!(if mode==6{"旅行计划"}else{"数据库检查"})}})
+    } else if input["kind"] == "maintain" && matches!(mode, 22 | 23) {
+        let proof = &input["usage"][0];
+        json!({"notes":[],"conflicts":[],"revisions":[{"memory_id":proof["memory_id"],"expected_revision":proof["revision"],"content":"虚构数据库检查：先确认版本和权限；新版检查端点为 /health。保留复制状态核对。","reason":"Agent 报告旧检查端点已迁移，建议确认新端点","feedback_refs":[if mode==23{json!(Uuid::now_v7())}else{proof["recall_id"].clone()}]}]})
     } else if input["kind"] == "review" {
         let target = *model.target.lock().unwrap();
         json!({"decisions":input["candidates"].as_array().unwrap().iter().enumerate().map(|(index,_)| {
-            if mode == 7 || mode == 11 || mode == 12 { let old=input["memories"].as_array().unwrap().iter().find(|m|m["id"].as_str().and_then(|s|Uuid::parse_str(s).ok())==target).unwrap(); json!({"candidate_index":index,"action":"propose_revision","reason":"用户明确改为周五","replacement":{"memory_id":old["id"],"expected_revision":old["revision"],"content":"虚构数据库检查：确认连接和复制状态；用户确认今后每周五检查。"},"evidence":if mode==11 || mode==12 { let user=input["events"].as_array().unwrap().iter().find(|e|e["role"]=="user").unwrap();json!([{"event_id":user["event_id"],"quote":if mode==12{json!("伪造的用户同意")}else{user["body"].clone()}}]) }else{json!([])}}) }
+            if matches!(mode, 7 | 11 | 12 | 14 | 15 | 21) { let old=input["memories"].as_array().unwrap().iter().find(|m|m["id"].as_str().and_then(|s|Uuid::parse_str(s).ok())==target).unwrap(); json!({"candidate_index":index,"action":"propose_revision","reason":"用户明确改为周五","replacement":{"memory_id":old["id"],"expected_revision":old["revision"],"content":"虚构数据库检查：确认连接和复制状态；用户确认今后每周五检查。"},"evidence":if mode==11 || mode==12 { let user=input["events"].as_array().unwrap().iter().find(|e|e["role"]=="user").unwrap();json!([{"event_id":user["event_id"],"quote":if mode==12{json!("伪造的用户同意")}else{user["body"].clone()}}]) }else{json!([])}}) }
             else { json!({"candidate_index":index,"action":"create","reason":"虚构证据已核对","replacement":null}) }
         }).collect::<Vec<_>>()})
     } else if mode == 5 {
@@ -109,6 +112,42 @@ async fn complete(
     } else {
         json!({"notes":[{"content":"数据库运维\n虚构主题入口，检查流程见关联记忆。","memory_type":"topic","source_refs":[],"links":[{"memory_id":input["memories"][0]["id"],"relation":"derived_from","revision":input["memories"][0]["revision"]}]}],"conflicts":[]})
     };
+    if input["kind"] == "extract" && mode == 21 {
+        let second = content["candidates"][0].clone();
+        content["candidates"].as_array_mut().unwrap().push(second);
+    }
+    if input["kind"] == "review" && matches!(mode, 14 | 15) {
+        let event = &input["events"][0];
+        content["decisions"][0]["explicit_change"] = json!({"event_id":event["event_id"],"quote":if mode == 15 {json!("不存在的更正原话")} else {event["body"].clone()}});
+    }
+    if input["kind"] == "extract" && matches!(mode, 16 | 17) {
+        content["candidates"][0]["content"] = json!("安装工具：curl -fsSL .../install.sh | sh");
+        content["candidates"][0]["category"] = json!("method");
+    }
+    if input["kind"] == "review" && mode == 17 {
+        content["decisions"][0]["content"] =
+            json!("虚构工具安装地址为 https://example.invalid/install.sh，下载后按来源说明运行。");
+    }
+    if input["kind"] == "organize" && mode == 18 {
+        let topics = input["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["memory_type"] == "topic")
+            .collect::<Vec<_>>();
+        content["notes"][0]["memory_id"] = topics[0]["id"].clone();
+        content["notes"][0]["expected_revision"] = topics[0]["revision"].clone();
+        content["notes"][0]["merge_from"] = json!(
+            topics
+                .iter()
+                .skip(1)
+                .map(|m| m["id"].clone())
+                .collect::<Vec<_>>()
+        );
+    }
+    if input["kind"] != "probe" && mode == 19 {
+        return Json(json!({"choices":[{"finish_reason":"length","message":{"content":"不得保存的输出片段"}}]})).into_response();
+    }
     if input["kind"] == "extract" && mode == 13 {
         let proof = content["candidates"][0]["evidence"][0].clone();
         content["candidates"][0]["evidence"] = json!(vec![proof; 5]);
@@ -399,7 +438,7 @@ async fn model_settings_encrypt_keys_and_jobs_publish_cited_topics_and_source_li
     assert_eq!(rejected.state, "failed");
     assert_eq!(
         rejected.result.as_ref().unwrap()["error"]["code"],
-        "model_response"
+        "model_output_schema"
     );
     assert!(
         rejected.result.as_ref().unwrap()["error"]["message"]
@@ -740,6 +779,8 @@ async fn organization_config(f: &Fixture, enabled: bool, limit: u32) {
                 expected_revision: revision,
                 enabled,
                 extraction_enabled: false,
+                maintenance_enabled: false,
+                maintenance_interval_hours: 24,
                 batch_size: 3,
                 interval_seconds: 10,
                 daily_limit: limit,
@@ -747,6 +788,76 @@ async fn organization_config(f: &Fixture, enabled: bool, limit: u32) {
         )
         .await
         .unwrap();
+}
+#[tokio::test]
+#[ignore = "需要独立 MySQL 测试库；模型仅为本机模拟服务"]
+async fn saving_text_model_preserves_explicit_automatic_processing_choices() {
+    let f = fixture().await;
+    let untouched = f.store.organization_settings(f.space).await.unwrap();
+    save(&f, "fictional-independent-text").await;
+    assert_eq!(
+        f.store.organization_settings(f.space).await.unwrap(),
+        untouched,
+        "保存连接不代表授权处理历史记忆或对话"
+    );
+    let note = memory(&f).await;
+    captured(
+        &f,
+        "fictional-settings-session",
+        "虚构项目使用中文",
+        chromie::types::now(),
+    )
+    .await;
+    assert_eq!(f.store.schedule_automatic().await.unwrap(), 0);
+    assert_eq!(
+        f.model.requests.lock().unwrap().len(),
+        1,
+        "只有固定连接探针调用模型"
+    );
+    let manual = queue(&f, note).await;
+    f.store.sync_knowledge_due().await.unwrap();
+    assert_eq!(
+        job(&f, manual).await.state,
+        "done",
+        "自动任务关闭不影响手动使用模型"
+    );
+    f.store
+        .save_organization(
+            f.space,
+            chromie::organization::Save {
+                expected_revision: untouched["revision"].as_i64().unwrap(),
+                enabled: false,
+                extraction_enabled: true,
+                maintenance_enabled: false,
+                maintenance_interval_hours: 24,
+                batch_size: 3,
+                interval_seconds: 90,
+                daily_limit: 123,
+            },
+        )
+        .await
+        .unwrap();
+    let chosen = f.store.organization_settings(f.space).await.unwrap();
+    let model = save(&f, "fictional-replacement-text").await;
+    assert_eq!(
+        f.store.organization_settings(f.space).await.unwrap(),
+        chosen
+    );
+    f.store
+        .disable_text_model(f.space, model["revision"].as_i64().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store.organization_settings(f.space).await.unwrap(),
+        chosen,
+        "暂停模型保留任务选择及运行参数"
+    );
+    save(&f, "fictional-replacement-text").await;
+    assert_eq!(
+        f.store.organization_settings(f.space).await.unwrap(),
+        chosen,
+        "恢复模型不会重置任务选择"
+    );
 }
 #[tokio::test]
 #[ignore = "需要隔离 MySQL 与 Qdrant"]
@@ -885,7 +996,10 @@ async fn automatic_organization_tracks_revisions_budget_context_pause_and_recove
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(progress.state, "failed");
+    assert_eq!(
+        progress.state, "blocked",
+        "单条结构错误停止原样重试，其他资料仍可继续"
+    );
     let next = memory(&f).await;
     f.model.mode.store(5, Ordering::SeqCst);
     organization_due(&f).await;
@@ -998,6 +1112,8 @@ async fn extraction_config(f: &Fixture, enabled: bool, organize: bool, limit: u3
                 expected_revision: revision,
                 enabled: organize,
                 extraction_enabled: enabled,
+                maintenance_enabled: false,
+                maintenance_interval_hours: 24,
                 batch_size: 3,
                 interval_seconds: 10,
                 daily_limit: limit,
@@ -1626,7 +1742,7 @@ async fn extraction_review_rechecks_versions_and_forgetting_clears_published_pro
         )
         .await
         .unwrap_err();
-    assert_eq!(error.code, "revision_conflict");
+    assert_eq!(error.code, "proposal_superseded");
     let otherkey = SpaceKey::parse("review-other-space").unwrap();
     f.store
         .create_space(
@@ -1759,4 +1875,928 @@ async fn review_can_add_missing_user_evidence_but_cannot_invent_it() {
             assert_eq!(receipt["revision"], 2);
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；明确更正自动应用且旧草案不能覆盖新版本"]
+async fn explicit_changes_apply_once_and_supersede_old_proposals() {
+    let f = fixture().await;
+    save(&f, "fictional-explicit-maintenance").await;
+    let target = memory(&f).await;
+    *f.model.target.lock().unwrap() = Some(target);
+    let event = captured(
+        &f,
+        "explicit-maintenance",
+        "数据库检查以后明确改为周五",
+        chromie::types::now(),
+    )
+    .await;
+    let mut ids = vec![];
+    for mode in [7, 14] {
+        f.model.mode.store(mode, Ordering::SeqCst);
+        let id = Uuid::now_v7();
+        f.store
+            .enqueue_knowledge(
+                f.space,
+                Queue {
+                    request_id: id,
+                    kind: JobKind::Extract,
+                    memory_ids: vec![],
+                    event_ids: vec![event],
+                },
+            )
+            .await
+            .unwrap();
+        finish_stage(&f).await;
+        ids.push(id);
+    }
+    let result = f.store.knowledge_review(f.space, ids[1]).await.unwrap();
+    assert_eq!(result["result"]["decisions"][0]["resolution"], "automatic");
+    assert_eq!(result["result"]["pending_revisions"], 0);
+    assert_eq!(
+        f.store.knowledge_review(f.space, ids[0]).await.unwrap()["result"]["decisions"][0]["resolution"],
+        "superseded"
+    );
+    assert!(
+        f.store
+            .apply_extraction_revision(
+                f.space,
+                chromie::extraction::Apply {
+                    job_id: ids[0],
+                    candidate_index: 0
+                }
+            )
+            .await
+            .is_err()
+    );
+    let receipt = f
+        .store
+        .apply_extraction_revision(
+            f.space,
+            chromie::extraction::Apply {
+                job_id: ids[1],
+                candidate_index: 0,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt["revision"], 2);
+    let read = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(json!({"memory_id":target,"max_chars":8000})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read["pending_revisions"], 0);
+    assert!(read["content"].as_str().unwrap().contains("周五"));
+    // 人工更正保留旧来源也是正常操作；之前的消息不能再次覆盖新的人工决定。
+    f.store
+        .correct(
+            f.space,
+            Correct {
+                memory_id: target,
+                expected_revision: 2,
+                request_id: Uuid::now_v7(),
+                reason: "人工确认改为周一".into(),
+                content: Some("虚构数据库检查：人工确认改为周一。".into()),
+                scope: None,
+                source_refs: None,
+                memory_type: None,
+                links: None,
+            },
+        )
+        .await
+        .unwrap();
+    let replay = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: replay,
+                kind: JobKind::Extract,
+                memory_ids: vec![],
+                event_ids: vec![event],
+            },
+        )
+        .await
+        .unwrap();
+    finish_stage(&f).await;
+    let result = f.store.knowledge_review(f.space, replay).await.unwrap();
+    assert_eq!(result["result"]["decisions"][0]["applied"], false);
+    assert_eq!(result["result"]["pending_revisions"], 1);
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；确认一个方案不能复活同任务中其余旧方案"]
+async fn confirming_one_proposal_expires_other_proposals_in_the_same_job() {
+    let f = fixture().await;
+    save(&f, "fictional-proposal-convergence").await;
+    let target = memory(&f).await;
+    *f.model.target.lock().unwrap() = Some(target);
+    let event = captured(
+        &f,
+        "proposal-convergence",
+        "讨论数据库检查改为周五",
+        chromie::types::now(),
+    )
+    .await;
+    f.model.mode.store(21, Ordering::SeqCst);
+    let id = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: id,
+                kind: JobKind::Extract,
+                memory_ids: vec![],
+                event_ids: vec![event],
+            },
+        )
+        .await
+        .unwrap();
+    finish_stage(&f).await;
+    assert_eq!(
+        f.store.knowledge_review(f.space, id).await.unwrap()["result"]["pending_revisions"],
+        2
+    );
+    f.store
+        .apply_extraction_revision(
+            f.space,
+            chromie::extraction::Apply {
+                job_id: id,
+                candidate_index: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let result = f.store.knowledge_review(f.space, id).await.unwrap();
+    assert_eq!(result["result"]["pending_revisions"], 0);
+    assert_eq!(result["result"]["decisions"][1]["resolution"], "superseded");
+    assert!(
+        f.store
+            .apply_extraction_revision(
+                f.space,
+                chromie::extraction::Apply {
+                    job_id: id,
+                    candidate_index: 1
+                }
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；残缺方法与伪造更正不发布，真实来源可补齐"]
+async fn incomplete_methods_and_invalid_explicit_proofs_are_not_published() {
+    let f = fixture().await;
+    save(&f, "fictional-standalone-maintenance").await;
+    let target = memory(&f).await;
+    *f.model.target.lock().unwrap() = Some(target);
+    let event = captured(
+        &f,
+        "standalone-maintenance",
+        "数据库检查明确改为周五；虚构工具安装地址 https://example.invalid/install.sh",
+        chromie::types::now(),
+    )
+    .await;
+    for mode in [15, 16, 17] {
+        f.model.mode.store(mode, Ordering::SeqCst);
+        let id = Uuid::now_v7();
+        f.store
+            .enqueue_knowledge(
+                f.space,
+                Queue {
+                    request_id: id,
+                    kind: JobKind::Extract,
+                    memory_ids: vec![],
+                    event_ids: vec![event],
+                },
+            )
+            .await
+            .unwrap();
+        finish_stage(&f).await;
+        let result = f.store.knowledge_review(f.space, id).await.unwrap();
+        assert_eq!(
+            result["result"]["decisions"][0]["action"],
+            if mode == 17 { "create" } else { "defer" }
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；主题合并保留全部分支和旧链接，不删除普通记忆"]
+async fn topic_merge_keeps_branches_history_and_redirects() {
+    let f = fixture().await;
+    save(&f, "fictional-topic-maintenance").await;
+    let notes = [memory(&f).await, memory(&f).await];
+    let mut topics = vec![];
+    for (i, note) in notes.iter().enumerate() {
+        let receipt = f
+            .store
+            .remember(
+                f.space,
+                Remember {
+                    request_id: Uuid::now_v7(),
+                    content: format!("虚构数据库主题{i}\n数据库检查入口。"),
+                    scope: Scope::Global,
+                    source_refs: vec![],
+                    memory_type: MemoryType::Topic,
+                    links: vec![chromie::knowledge::Link {
+                        memory_id: *note,
+                        relation: chromie::knowledge::Relation::DerivedFrom,
+                        revision: Some(1),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        topics.push(Uuid::parse_str(receipt["memory_id"].as_str().unwrap()).unwrap());
+    }
+    f.store
+        .correct(
+            f.space,
+            Correct {
+                memory_id: notes[1],
+                expected_revision: 1,
+                request_id: Uuid::now_v7(),
+                reason: "虚构较晚分支更新".into(),
+                content: Some("虚构数据库检查：增加容量核对".into()),
+                scope: None,
+                source_refs: None,
+                memory_type: None,
+                links: None,
+            },
+        )
+        .await
+        .unwrap();
+    f.model.mode.store(18, Ordering::SeqCst);
+    let id = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: id,
+                kind: JobKind::Organize,
+                memory_ids: vec![notes[0], topics[0], topics[1]],
+                event_ids: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    finish_stage(&f).await;
+    assert_eq!(job(&f, id).await.state, "done");
+    let alias = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(json!({"memory_id":topics[1],"max_chars":8000})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(alias["memory_type"], "topic_alias");
+    assert_eq!(alias["redirect_to"], topics[0].to_string());
+    let keeper = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(json!({"memory_id":topics[0],"max_chars":8000})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        keeper["knowledge"]["needs_review"], true,
+        "保留未读分支的旧依据须提示核对，不能宣称已读新版"
+    );
+    let outgoing = f
+        .store
+        .memory_neighbors(
+            f.space,
+            chromie::knowledge::Neighbors {
+                memory_id: topics[0],
+                incoming: false,
+                cursor: None,
+                project_key: None,
+                max_chars: Some(8000),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(outgoing["memories"].as_array().unwrap().len(), 2);
+    let navigation = f
+        .store
+        .navigation(f.space, Navigation::default())
+        .await
+        .unwrap();
+    assert!(
+        !navigation["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["memory_id"] == topics[1].to_string())
+    );
+    for note in notes {
+        assert!(
+            f.store
+                .get(
+                    f.space,
+                    serde_json::from_value(json!({"memory_id":note,"max_chars":8000})).unwrap()
+                )
+                .await
+                .unwrap()["content"]
+                .is_string()
+        );
+    }
+    let history = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(
+                json!({"memory_id":topics[1],"view":"history","max_chars":8000}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(history["history"].as_array().unwrap().len(), 2);
+    let change = f
+        .store
+        .correct(
+            f.space,
+            Correct {
+                memory_id: topics[0],
+                expected_revision: 2,
+                request_id: Uuid::now_v7(),
+                reason: "虚构错误变型".into(),
+                content: None,
+                scope: None,
+                source_refs: None,
+                memory_type: Some(MemoryType::Note),
+                links: None,
+            },
+        )
+        .await;
+    assert!(
+        change.is_err(),
+        "旧入口仍在使用时不能把有效主题改成普通记忆"
+    );
+    f.store
+        .forget(
+            f.space,
+            chromie::types::Forget {
+                memory_id: Some(topics[0]),
+                expected_revision: Some(2),
+                event_id: None,
+                request_id: Uuid::now_v7(),
+            },
+        )
+        .await
+        .unwrap();
+    let hidden = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(json!({"memory_id":topics[1],"max_chars":8000})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        hidden["hidden"], true,
+        "遗忘有效主题后不能留下可迁移的悬空别名"
+    );
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；错误诊断不保留响应原文，结构故障不盲目重试"]
+async fn truncated_output_has_safe_stage_diagnostics() {
+    let f = fixture().await;
+    save(&f, "fictional-diagnostic-maintenance").await;
+    let note = memory(&f).await;
+    f.model.mode.store(19, Ordering::SeqCst);
+    let id = queue(&f, note).await;
+    finish_stage(&f).await;
+    let result = job(&f, id).await;
+    assert_eq!(result.last_error.as_deref(), Some("model_output_truncated"));
+    let diagnostic = &result.result.as_ref().unwrap()["diagnostic"];
+    assert_eq!(diagnostic["phase"], "organize");
+    assert_eq!(diagnostic["automatic_retry"], false);
+    assert!(diagnostic["snapshot_bytes"].as_u64().unwrap() > 0);
+    assert!(
+        !result
+            .result
+            .unwrap()
+            .to_string()
+            .contains("不得保存的输出片段")
+    );
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；迟到旧更正只能待确认，读取须有明确提示"]
+async fn late_explicit_change_does_not_overwrite_newer_memory() {
+    let f = fixture().await;
+    save(&f, "fictional-late-correction").await;
+    let target = memory(&f).await;
+    *f.model.target.lock().unwrap() = Some(target);
+    let event = captured(
+        &f,
+        "late-explicit",
+        "用户明确改为周五检查数据库",
+        chromie::types::now() - time::Duration::hours(1),
+    )
+    .await;
+    f.model.mode.store(14, Ordering::SeqCst);
+    let id = Uuid::now_v7();
+    f.store
+        .enqueue_knowledge(
+            f.space,
+            Queue {
+                request_id: id,
+                kind: JobKind::Extract,
+                memory_ids: vec![],
+                event_ids: vec![event],
+            },
+        )
+        .await
+        .unwrap();
+    finish_stage(&f).await;
+    let result = f.store.knowledge_review(f.space, id).await.unwrap();
+    assert_eq!(result["result"]["pending_revisions"], 1);
+    let read = f
+        .store
+        .get(
+            f.space,
+            serde_json::from_value(json!({"memory_id":target,"max_chars":8000})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read["revision"], 1);
+    assert_eq!(read["pending_revisions"], 1);
+    assert!(read["maintenance_notice"].is_string());
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；结构失败逐步缩批，单条仍失败后不再重复调用"]
+async fn structural_failure_reduces_batches_and_stops_at_single_item() {
+    use chromie::entity::organization_items as items;
+    use sea_orm::{ColumnTrait, QueryFilter, sea_query::Expr};
+    let f = fixture().await;
+    save(&f, "fictional-adaptive-batch").await;
+    for _ in 0..4 {
+        memory(&f).await;
+    }
+    organization_config(&f, true, 100).await;
+    let config_revision = f.store.organization_settings(f.space).await.unwrap()["revision"]
+        .as_i64()
+        .unwrap();
+    f.store
+        .save_organization(
+            f.space,
+            chromie::organization::Save {
+                expected_revision: config_revision,
+                enabled: true,
+                extraction_enabled: false,
+                maintenance_enabled: false,
+                maintenance_interval_hours: 24,
+                batch_size: 4,
+                interval_seconds: 10,
+                daily_limit: 100,
+            },
+        )
+        .await
+        .unwrap();
+    f.model.mode.store(19, Ordering::SeqCst);
+    let mut sizes = vec![];
+    for _ in 0..10 {
+        organization_due(&f).await;
+        items::Entity::update_many()
+            .col_expr(
+                items::Column::RunAfter,
+                Expr::value(chromie::types::now() - time::Duration::seconds(1)),
+            )
+            .filter(items::Column::SpaceId.eq(f.space.bytes()))
+            .exec(&f.store.db)
+            .await
+            .unwrap();
+        if f.store.schedule_organization().await.unwrap() == 0 {
+            break;
+        }
+        f.store.sync_knowledge_due().await.unwrap();
+        sizes.push(
+            f.model.requests.lock().unwrap().last().unwrap().2["memories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["memory_type"] == "note")
+                .count(),
+        );
+    }
+    assert_eq!(sizes.first(), Some(&4));
+    assert!(sizes.contains(&2) && sizes.contains(&1));
+    let progress = items::Entity::find()
+        .filter(items::Column::SpaceId.eq(f.space.bytes()))
+        .all(&f.store.db)
+        .await
+        .unwrap();
+    assert_eq!(progress.len(), 4);
+    assert!(progress.iter().all(|p| p.state == "blocked"));
+    organization_due(&f).await;
+    assert_eq!(f.store.schedule_organization().await.unwrap(), 0);
+    f.model.mode.store(0, Ordering::SeqCst);
+    save(&f, "fictional-fixed-output-budget").await;
+    organization_due(&f).await;
+    assert!(
+        f.store.schedule_organization().await.unwrap() > 0,
+        "修正模型配置后阻断项应重新获得处理机会"
+    );
+}
+
+async fn maintain_config(f: &Fixture, enabled: bool, limit: u32) {
+    let revision = f.store.organization_settings(f.space).await.unwrap()["revision"]
+        .as_i64()
+        .unwrap();
+    f.store
+        .save_organization(
+            f.space,
+            chromie::organization::Save {
+                expected_revision: revision,
+                enabled: false,
+                extraction_enabled: false,
+                maintenance_enabled: enabled,
+                maintenance_interval_hours: 24,
+                batch_size: 10,
+                interval_seconds: 10,
+                daily_limit: limit,
+            },
+        )
+        .await
+        .unwrap();
+}
+async fn maintain_due(f: &Fixture) {
+    let mut setting = chromie::entity::organization_settings::Entity::find_by_id(1u8)
+        .one(&f.store.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_active_model();
+    setting.next_run_at = Set(chromie::types::now() - time::Duration::seconds(1));
+    setting.update(&f.store.db).await.unwrap();
+}
+async fn latest_maintain(f: &Fixture) -> knowledge_jobs::Model {
+    use sea_orm::{ColumnTrait, QueryFilter, QueryOrder};
+    knowledge_jobs::Entity::find()
+        .filter(knowledge_jobs::Column::SpaceId.eq(f.space.bytes()))
+        .filter(knowledge_jobs::Column::Kind.eq("maintain"))
+        .order_by_desc(knowledge_jobs::Column::CreatedAt)
+        .one(&f.store.db)
+        .await
+        .unwrap()
+        .unwrap()
+}
+async fn report_problem(f: &Fixture, id: Uuid) -> Uuid {
+    let (agent, _, _) = support::grant(&f.store, f.space, false).await;
+    let recall = Uuid::now_v7();
+    let now = chromie::types::now();
+    chromie::entity::recall_runs::ActiveModel {
+        space_id: Set(f.space.bytes()),
+        id: Set(recall.as_bytes().to_vec()),
+        agent_id: Set(Some(agent.as_bytes().to_vec())),
+        channel: Set("agent".into()),
+        created_at: Set(now),
+    }
+    .insert(&f.store.db)
+    .await
+    .unwrap();
+    let head =
+        chromie::entity::memories::Entity::find_by_id((f.space.bytes(), id.as_bytes().to_vec()))
+            .one(&f.store.db)
+            .await
+            .unwrap()
+            .unwrap();
+    chromie::entity::recall_items::ActiveModel {
+        space_id: Set(f.space.bytes()),
+        recall_id: Set(recall.as_bytes().to_vec()),
+        memory_id: Set(id.as_bytes().to_vec()),
+        revision: Set(head.current_revision),
+        useful: Set(None),
+        evaluated_at: Set(None),
+        use_outcome: Set(Some("content_outdated".into())),
+        use_reason: Set(Some(
+            "虚构检查端点由 /old-health 迁移为 /health；需核对版本".into(),
+        )),
+        used_at: Set(Some(now)),
+    }
+    .insert(&f.store.db)
+    .await
+    .unwrap();
+    if let Some(row) = chromie::entity::maintenance_items::Entity::find_by_id((
+        f.space.bytes(),
+        id.as_bytes().to_vec(),
+    ))
+    .one(&f.store.db)
+    .await
+    .unwrap()
+    {
+        let queued = row.state == "queued";
+        let mut row = row.into_active_model();
+        row.requested_at = Set(now);
+        if !queued {
+            row.state = Set("pending".into())
+        };
+        row.update(&f.store.db).await.unwrap();
+    }
+    recall
+}
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；独立周期维护、共享预算和在途反馈"]
+async fn independent_maintenance_cycles_without_new_memories_and_preserves_inflight_feedback() {
+    let f = fixture().await;
+    save(&f, "fictional-independent-maintenance").await;
+    let note = memory(&f).await;
+    assert_eq!(
+        f.store.organization_settings(f.space).await.unwrap()["maintenance_enabled"],
+        false
+    );
+    maintain_config(&f, true, 100).await;
+    assert!(f.store.schedule_maintenance().await.unwrap() > 0);
+    let first = latest_maintain(&f).await;
+    f.store.sync_knowledge_due().await.unwrap();
+    assert_eq!(
+        job(&f, Uuid::from_slice(&first.id).unwrap()).await.state,
+        "done"
+    );
+    maintain_due(&f).await;
+    assert_eq!(
+        f.store.schedule_maintenance().await.unwrap(),
+        1,
+        "首轮新建主题也须覆盖一次"
+    );
+    f.model.mode.store(5, Ordering::SeqCst);
+    f.store.sync_knowledge_due().await.unwrap();
+    maintain_due(&f).await;
+    assert_eq!(
+        f.store.schedule_maintenance().await.unwrap(),
+        0,
+        "无新输入的周期内不反复检查"
+    );
+    // 不增加记忆，使检查覆盖时间过期；独立维护仍会再次运行。
+    use sea_orm::{ColumnTrait, QueryFilter};
+    chromie::entity::maintenance_items::Entity::update_many()
+        .col_expr(
+            chromie::entity::maintenance_items::Column::CompletedAt,
+            sea_orm::sea_query::Expr::value(chromie::types::now() - time::Duration::hours(25)),
+        )
+        .filter(chromie::entity::maintenance_items::Column::SpaceId.eq(f.space.bytes()))
+        .exec(&f.store.db)
+        .await
+        .unwrap();
+    maintain_due(&f).await;
+    assert!(f.store.schedule_maintenance().await.unwrap() > 0);
+    f.model.mode.store(1, Ordering::SeqCst);
+    let work = {
+        let store = f.store.clone();
+        tokio::spawn(async move { store.sync_knowledge_due().await.unwrap() })
+    };
+    f.model.entered.notified().await;
+    report_problem(&f, note).await;
+    f.model.mode.store(5, Ordering::SeqCst);
+    f.model.release.notify_one();
+    work.await.unwrap();
+    let progress = chromie::entity::maintenance_items::Entity::find_by_id((
+        f.space.bytes(),
+        note.as_bytes().to_vec(),
+    ))
+    .one(&f.store.db)
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(progress.state, "pending", "在途新报告不能被旧完成边界吞掉");
+    maintain_due(&f).await;
+    assert!(f.store.schedule_maintenance().await.unwrap() > 0);
+    f.store.sync_knowledge_due().await.unwrap();
+    maintain_config(&f, false, 100).await;
+    assert_eq!(f.store.schedule_maintenance().await.unwrap(), 0);
+    maintain_config(&f, true, 1).await;
+    assert_eq!(
+        f.store.schedule_automatic().await.unwrap(),
+        0,
+        "每日预算与其他任务共享且不因切换设置清零"
+    );
+    f.server.abort();
+}
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；使用报告只生成待确认修订并复核证据"]
+async fn maintenance_proposals_require_real_feedback_and_manual_revision_confirmation() {
+    let f = fixture().await;
+    save(&f, "fictional-use-review").await;
+    let note = memory(&f).await;
+    report_problem(&f, note).await;
+    maintain_config(&f, true, 100).await;
+    f.model.mode.store(22, Ordering::SeqCst);
+    assert_eq!(f.store.schedule_maintenance().await.unwrap(), 1);
+    let task = latest_maintain(&f).await;
+    let id = Uuid::from_slice(&task.id).unwrap();
+    f.store.sync_knowledge_due().await.unwrap();
+    let done = job(&f, id).await;
+    assert_eq!(done.state, "done", "{}", done.result.unwrap_or_default());
+    let head =
+        chromie::entity::memories::Entity::find_by_id((f.space.bytes(), note.as_bytes().to_vec()))
+            .one(&f.store.db)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(head.current_revision, 1, "Agent 报告不能自动覆盖事实");
+    let review = f.store.knowledge_review(f.space, id).await.unwrap();
+    assert_eq!(review["result"]["pending_revisions"], 1);
+    assert_eq!(
+        review["result"]["decisions"][0]["evidence_details"][0]["role"],
+        "agent_reported"
+    );
+    let input = chromie::extraction::Apply {
+        job_id: id,
+        candidate_index: 0,
+    };
+    let receipt = f
+        .store
+        .apply_extraction_revision(f.space, input)
+        .await
+        .unwrap();
+    assert_eq!(receipt["revision"], 2);
+    assert_eq!(
+        f.store
+            .apply_extraction_revision(
+                f.space,
+                chromie::extraction::Apply {
+                    job_id: id,
+                    candidate_index: 0
+                }
+            )
+            .await
+            .unwrap(),
+        receipt
+    );
+    report_problem(&f, note).await;
+    maintain_due(&f).await;
+    f.model.mode.store(23, Ordering::SeqCst);
+    assert_eq!(f.store.schedule_maintenance().await.unwrap(), 1);
+    let bad = latest_maintain(&f).await;
+    f.store.sync_knowledge_due().await.unwrap();
+    assert_eq!(
+        job(&f, Uuid::from_slice(&bad.id).unwrap())
+            .await
+            .last_error
+            .as_deref(),
+        Some("model_evidence_invalid")
+    );
+    f.server.abort();
+}
+
+#[tokio::test]
+#[ignore = "需要隔离 MySQL；问题依据不被成功报告淹没，新修订请求优先"]
+async fn maintenance_prioritizes_revision_requests_and_keeps_problem_evidence_amid_successes() {
+    let f = fixture().await;
+    save(&f, "fictional-priority-check").await;
+    let target = memory(&f).await;
+    maintain_config(&f, true, 100).await;
+    f.model.mode.store(5, Ordering::SeqCst);
+    f.store.schedule_maintenance().await.unwrap();
+    f.store.sync_knowledge_due().await.unwrap();
+    // 制造更多旧待处理资料，更新后的目标仍应因问题报告优先。
+    for _ in 0..12 {
+        memory(&f).await;
+    }
+    f.store
+        .correct(
+            f.space,
+            Correct {
+                memory_id: target,
+                expected_revision: 1,
+                request_id: Uuid::now_v7(),
+                reason: "虚构方法新版本".into(),
+                content: Some("虚构新版本数据库检查 /old-health".into()),
+                scope: None,
+                source_refs: None,
+                memory_type: None,
+                links: None,
+            },
+        )
+        .await
+        .unwrap();
+    let (agent, token, _) = support::grant(&f.store, f.space, false).await;
+    // 真实 MCP 反馈走原 Agent 鉴权，绑定新的 revision，触发优先请求。
+    let recall = Uuid::now_v7();
+    let now = chromie::types::now();
+    chromie::entity::recall_runs::ActiveModel {
+        space_id: Set(f.space.bytes()),
+        id: Set(recall.as_bytes().to_vec()),
+        agent_id: Set(Some(agent.as_bytes().to_vec())),
+        channel: Set("agent".into()),
+        created_at: Set(now),
+    }
+    .insert(&f.store.db)
+    .await
+    .unwrap();
+    chromie::entity::recall_items::ActiveModel {
+        space_id: Set(f.space.bytes()),
+        recall_id: Set(recall.as_bytes().to_vec()),
+        memory_id: Set(target.as_bytes().to_vec()),
+        revision: Set(2),
+        useful: Set(None),
+        evaluated_at: Set(None),
+        use_outcome: Set(None),
+        use_reason: Set(None),
+        used_at: Set(None),
+    }
+    .insert(&f.store.db)
+    .await
+    .unwrap();
+    let router = chromie::http::router_with_sessions(
+        f.store.clone(),
+        None,
+        chromie::web_session::WebSessions::from_key(&support::root()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let slug = chromie::entity::spaces::Entity::find_by_id(f.space.bytes())
+        .one(&f.store.db)
+        .await
+        .unwrap()
+        .unwrap()
+        .slug;
+    let response:Value=reqwest::Client::new().post(format!("http://{address}/spaces/{slug}/mcp")).bearer_auth(token).header("accept","application/json, text/event-stream").header("mcp-protocol-version","2025-06-18").json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"feedback_recall","arguments":{"recalls":[{"recall_id":recall,"usage":[{"memory_id":target,"outcome":"content_outdated","reason":"虚构旧端点迁移到 /health，仍需核对版本"}]}]}}})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(response["result"]["isError"], false);
+    let progress = chromie::entity::maintenance_items::Entity::find_by_id((
+        f.space.bytes(),
+        target.as_bytes().to_vec(),
+    ))
+    .one(&f.store.db)
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(progress.revision, 2);
+    for _ in 0..25 {
+        let id = Uuid::now_v7();
+        let now = chromie::types::now();
+        chromie::entity::recall_runs::ActiveModel {
+            space_id: Set(f.space.bytes()),
+            id: Set(id.as_bytes().to_vec()),
+            agent_id: Set(Some(agent.as_bytes().to_vec())),
+            channel: Set("agent".into()),
+            created_at: Set(now),
+        }
+        .insert(&f.store.db)
+        .await
+        .unwrap();
+        chromie::entity::recall_items::ActiveModel {
+            space_id: Set(f.space.bytes()),
+            recall_id: Set(id.as_bytes().to_vec()),
+            memory_id: Set(target.as_bytes().to_vec()),
+            revision: Set(2),
+            useful: Set(None),
+            evaluated_at: Set(None),
+            use_outcome: Set(Some("succeeded".into())),
+            use_reason: Set(None),
+            used_at: Set(Some(now)),
+        }
+        .insert(&f.store.db)
+        .await
+        .unwrap();
+    }
+    let revision = f.store.organization_settings(f.space).await.unwrap()["revision"]
+        .as_i64()
+        .unwrap();
+    f.store
+        .save_organization(
+            f.space,
+            chromie::organization::Save {
+                expected_revision: revision,
+                enabled: false,
+                extraction_enabled: false,
+                maintenance_enabled: true,
+                maintenance_interval_hours: 24,
+                batch_size: 1,
+                interval_seconds: 10,
+                daily_limit: 100,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.store.schedule_maintenance().await.unwrap(), 1);
+    let task = latest_maintain(&f).await;
+    let payload = task.payload.clone().unwrap();
+    assert_eq!(payload["automatic"]["memory_ids"][0], json!(target));
+    assert!(
+        payload["usage"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["recall_id"] == json!(recall)),
+        "负向依据不能被25条较新成功挤掉"
+    );
+    assert!(payload["usage"].as_array().unwrap().len() <= 20);
+    server.abort();
 }
