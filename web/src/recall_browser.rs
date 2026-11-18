@@ -210,13 +210,15 @@ pub fn receive_recall(
                     path: path.into(),
                     score: score.into(),
                     content: card.content.clone().into(),
+                    content_truncated: card.content_truncated,
+                    revision: card.revision,
                     scope: scope.into(),
                     time: crate::browser::date(&card.updated_at).into(),
                     detail: format!(
                         "{} · 修订 {} · {} 条来源 · {}",
                         card.origin.agent_name,
                         card.revision,
-                        card.source_refs.len(),
+                        card.source_count,
                         if card.processing_state == "index_ready" {
                             "已同步"
                         } else {

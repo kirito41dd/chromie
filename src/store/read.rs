@@ -3,7 +3,7 @@ use crate::{
     entity::{memory_sources, source_events},
     types::{GetMemory, View, output_budget, timestamp},
 };
-use sea_orm::QueryOrder;
+use sea_orm::{PaginatorTrait, QueryOrder};
 
 // 只裁剪正文及结果条数，不能裁剪对象 ID、版本或空间标识。
 pub fn budget(mut value: Value, max_chars: usize) -> Value {
@@ -75,32 +75,33 @@ pub fn budget(mut value: Value, max_chars: usize) -> Value {
     value
 }
 
+pub(super) enum CardView {
+    Recall,
+    Detail(Option<i32>),
+}
+
 impl Store {
     pub(super) async fn card<C: ConnectionTrait>(
         db: &C,
         space: SpaceId,
         id: Uuid,
-        selected: Option<i32>,
+        view: CardView,
     ) -> Result<Value> {
         let mut head = Self::head(db, space, id).await?;
         if head.forgotten_at.is_some() {
             return Err(Error::missing());
         }
-        let is_current = selected.is_none_or(|version| version == head.current_revision);
-        if let Some(version) = selected {
-            head.current_revision = version;
-        }
+        let version = match view {
+            CardView::Recall | CardView::Detail(None) => head.current_revision,
+            CardView::Detail(Some(version)) => version,
+        };
+        let is_current = version == head.current_revision;
+        head.current_revision = version;
         let revision = Self::revision(db, &head).await?;
         let sources = memory_sources::Entity::find()
             .filter(memory_sources::Column::SpaceId.eq(space.bytes()))
             .filter(memory_sources::Column::MemoryId.eq(id.as_bytes().to_vec()))
-            .filter(memory_sources::Column::Revision.eq(head.current_revision))
-            .all(db)
-            .await?;
-        let refs = sources
-            .iter()
-            .map(|v| uuid_from_bytes(&v.event_id))
-            .collect::<Result<Vec<_>>>()?;
+            .filter(memory_sources::Column::Revision.eq(head.current_revision));
         let task = outbox_tasks::Entity::find_by_id((space.bytes(), id.as_bytes().to_vec()))
             .one(db)
             .await?;
@@ -116,10 +117,10 @@ impl Store {
             })
             .unwrap_or("index_unknown")
         };
-        let mut value = json!({"kind":"memory","memory_id":id,"revision":head.current_revision,"is_current":is_current,"content":revision.content,"processing_state":processing,
-            "project_key":revision.project_key,"updated_at":timestamp(revision.created_at)?,"source_refs":refs,
-            "evidence_status":if refs.is_empty(){"unverified"}else{"source_linked"}});
-        value["origin"] = Self::memory_origin(
+        let mut value = json!({"kind":"memory","memory_id":id,"revision":version,"is_current":is_current,"content":revision.content,"processing_state":processing,
+            "project_key":revision.project_key,"updated_at":timestamp(revision.created_at)?,
+            "memory_type":crate::knowledge::MemoryType::parse(&revision.memory_type)?});
+        let origin = Self::memory_origin(
             db,
             space,
             id,
@@ -127,18 +128,43 @@ impl Store {
             revision.change_reason.as_deref(),
         )
         .await?;
-        value["memory_type"] = json!(crate::knowledge::MemoryType::parse(&revision.memory_type)?);
+        let pending = if is_current {
+            Self::pending_revisions(db, space, id, version).await?
+        } else {
+            0
+        };
+        Self::decorate_secret(db, space, id, &mut value).await?;
+        if let CardView::Recall = view {
+            value["source_count"] = json!(sources.count(db).await?);
+            value["origin"] = json!({"agent_name": origin["agent_name"]});
+            if pending > 0 {
+                value["pending_revisions"] = json!(pending);
+            }
+            if let Some(fields) = value.as_object_mut() {
+                fields.remove("label"); // Secret 的公开说明已在 content 中。
+                fields.remove("is_current"); // 召回仅返回当前修订。
+            }
+            return Ok(value);
+        }
+        let refs = sources
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|row| uuid_from_bytes(&row.event_id))
+            .collect::<Result<Vec<_>>>()?;
+        value["evidence_status"] = json!(if refs.is_empty() {
+            "unverified"
+        } else {
+            "source_linked"
+        });
+        value["source_refs"] = json!(refs);
+        value["origin"] = origin;
         if revision.memory_type == "topic_alias" {
             value["redirect_to"] =
                 json!(Self::alias_redirect(db, space, id, head.current_revision).await?);
             value["maintenance_notice"] =
                 json!("此主题已合并，请沿 redirect_to 读取有效主题；旧正文仍保留在修订历史中");
         }
-        let pending = if is_current {
-            Self::pending_revisions(db, space, id, head.current_revision).await?
-        } else {
-            0
-        };
         value["pending_revisions"] = json!(pending);
         value["content_available"] = json!(revision.content.is_some());
         if !is_current && revision.content.is_none() {
@@ -163,7 +189,6 @@ impl Store {
             first.change_reason.as_deref(),
         )
         .await?;
-        Self::decorate_secret(db, space, id, &mut value).await?;
         Ok(value)
     }
 
@@ -231,7 +256,8 @@ impl Store {
                     }
                     None => (head.current_revision, 0),
                 };
-                let mut card = Self::card(&self.db, space, id, Some(version)).await?;
+                let mut card =
+                    Self::card(&self.db, space, id, CardView::Detail(Some(version))).await?;
                 card["knowledge"] = Self::knowledge_state(&self.db, space, id, version).await?;
                 if card.get("kind").and_then(Value::as_str) == Some("secret_ref")
                     && card.get("is_current").and_then(Value::as_bool) == Some(true)

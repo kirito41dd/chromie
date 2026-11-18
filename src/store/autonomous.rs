@@ -176,7 +176,9 @@ impl Store {
                 ))
                 .one(&tx)
                 .await?;
-                if source.is_none_or(|s| s.forgotten_at.is_some() || s.body.is_none()) {
+                if source.is_none_or(|s| s.forgotten_at.is_some() || s.body.is_none())
+                    || Self::auxiliary_source(&tx, space, *id).await?
+                {
                     Self::settle_old_review(&tx, row, index, None, Some("superseded")).await?;
                     tx.commit().await?;
                     return Ok(1);

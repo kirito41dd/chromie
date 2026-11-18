@@ -109,6 +109,9 @@ pub struct GetMemory {
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Recall {
+    /// 任务需要找到已有凭据引用时设为 true：匹配的已存 Secret 引用优先，其余结果保留原相对顺序。
+    #[serde(default)]
+    pub prefer_secret_refs: bool,
     /// 检索当前空间已保存记忆，最多 256 个 UTF-8 字节；启用模型后自动结合语义召回，否则使用关键词。
     pub query: String,
     pub project_key: Option<String>,

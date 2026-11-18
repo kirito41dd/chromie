@@ -180,6 +180,9 @@ impl Store {
                 .await?
                 .filter(|row| row.forgotten_at.is_none())
                 .ok_or_else(Error::missing)?;
+            if Self::auxiliary_source(tx, space, *id).await? {
+                return Err(Error::invalid("应用辅助会话保留原始采集，但不参与记忆提炼"));
+            }
             snapshot.events.push(EventSnapshot {
                 event_id: *id,
                 role: row.role,

@@ -85,11 +85,35 @@ pub struct Card {
     #[serde(default)]
     pub memory_id: String,
     pub content: String,
+    #[serde(default)]
+    pub content_truncated: bool,
     pub revision: i32,
     pub project_key: Option<String>,
     pub updated_at: String,
-    pub source_refs: Vec<String>,
+    pub source_count: usize,
     pub processing_state: String,
+}
+
+/// 用搜索快照标注用户打开的当前正文；关联阅读有自己的记忆和修订。
+pub(crate) struct RecallHit {
+    pub memory_id: String,
+    pub revision: i32,
+}
+
+impl RecallHit {
+    pub(crate) fn reading_note(&self, memory_id: &str, revision: i64, is_current: bool) -> String {
+        let mut note = if self.memory_id != memory_id {
+            " · 搜索命中的主题已合并，正在显示合并后的主题".to_owned()
+        } else if i64::from(self.revision) != revision {
+            format!(" · 搜索命中修订 {}，正文已更新", self.revision)
+        } else {
+            String::new()
+        };
+        if !is_current {
+            note.push_str(" · 阅读期间出现新修订，重新搜索可查看");
+        }
+        note
+    }
 }
 
 impl Results {
@@ -134,7 +158,22 @@ impl Results {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecallState, Results, debug_request, debug_response};
+    use super::{RecallHit, RecallState, Results, debug_request, debug_response};
+
+    #[test]
+    fn full_text_discloses_changes_since_the_search() {
+        let hit = RecallHit {
+            memory_id: "a".into(),
+            revision: 2,
+        };
+        assert!(hit.reading_note("a", 2, true).is_empty());
+        assert!(hit.reading_note("a", 3, true).contains("搜索命中修订 2"));
+        assert!(
+            hit.reading_note("a", 2, false)
+                .contains("阅读期间出现新修订")
+        );
+        assert!(hit.reading_note("b", 7, true).contains("主题已合并"));
+    }
 
     #[test]
     fn debug_json_contains_only_request_parameters_and_actual_response() {
@@ -177,7 +216,7 @@ mod tests {
     fn pending_and_degraded_results_explain_the_actual_search_limit() {
         let mut body = serde_json::json!({
             "memories":[{"memory_id":"虚构记忆","content":"虚构正文","revision":1,"project_key":null,
-                "updated_at":"2026-10-28T00:00:00Z","source_refs":[],"processing_state":"index_pending"}],
+                "updated_at":"2026-10-28T00:00:00Z","source_count":0,"processing_state":"index_pending"}],
             "index_available":true,"partial":false,"truncated":false,
             "debug":{
                 "timing":{"total_ms":20.0,"index_call_ms":3.0,"qdrant_server_ms":1.0},
@@ -213,7 +252,7 @@ mod tests {
     fn result_flags_and_cards_are_preserved_without_inventing_completeness() {
         let body = serde_json::json!({
             "memories":[{"kind":"secret_ref","secret_stored":true,"secret_ref":"secret://demo/01900000-0000-7000-8000-000000000000","memory_id":"01900000-0000-7000-8000-000000000000","content":"虚构召回正文","revision":2,"project_key":"demo",
-                "updated_at":"2026-10-27T00:00:00Z","source_refs":["虚构来源"],"processing_state":"index_pending"}],
+                "updated_at":"2026-10-27T00:00:00Z","source_count":1,"processing_state":"index_pending"}],
             "index_available":false,"partial":true,"truncated":true
         }).to_string();
         let result = Results::parse(&body).unwrap();
@@ -222,6 +261,13 @@ mod tests {
         incompatible["debug"] = serde_json::json!({"unknown_version":true});
         let compatible = Results::parse(&incompatible.to_string()).unwrap();
         assert!(compatible.debug.is_none(), "诊断不兼容不影响召回正文");
+        assert!(
+            !compatible.memories[0].content_truncated,
+            "整页被裁剪不代表此项正文被截断"
+        );
+        incompatible["memories"][0]["content_truncated"] = true.into();
+        let clipped = Results::parse(&incompatible.to_string()).unwrap();
+        assert!(clipped.memories[0].content_truncated);
         assert_eq!(compatible.memories[0].content, "虚构召回正文");
         let card = &result.memories[0];
         assert_eq!(card.secret.kind, "secret_ref");
@@ -240,7 +286,7 @@ mod tests {
         assert_eq!(card.revision, 2);
         assert_eq!(card.project_key.as_deref(), Some("demo"));
         assert_eq!(card.updated_at, "2026-10-27T00:00:00Z");
-        assert_eq!(card.source_refs.len(), 1);
+        assert_eq!(card.source_count, 1);
         assert_eq!(card.processing_state, "index_pending");
         assert!(result.note().contains("有限关键词检索"));
         assert!(result.note().contains("不完整"));

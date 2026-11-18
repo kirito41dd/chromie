@@ -343,6 +343,7 @@ async fn batches_preserve_mapping_usage_isolation_runtime_settings_and_stale_bar
                     owner,
                     Recall {
                         query: "batch-note-1".into(),
+                        prefer_secret_refs: false,
                         project_key: None,
                         max_chars: Some(8000),
                     },

@@ -26,7 +26,7 @@ MCP 不监听完整对话，也不自动把记忆注入每个回合。当前没�
 
 | 工具 | 输入 | 行为与输出 |
 | --- | --- | --- |
-| `recall` | `query`；可选 `project_key`、`max_chars` | 返回最多 10 条已保存记忆及 `index_available`、`partial`、`truncated` |
+| `recall` | `query`；可选 `project_key`、`max_chars`、`prefer_secret_refs` | 返回最多 10 条已保存记忆及 `index_available`、`partial`、`truncated` |
 | `get_memory` | `memory_id` 或 `event_id` 二选一；可选 `view`、`cursor`、`max_chars` | 当前正文、修订历史或有限来源；分页时返回 `next_cursor` |
 | `remember` | `content`、`request_id`；可选 `scope`、`source_refs`、`memory_type`、`links` | 默认普通记忆，可指定 `topic` 作为主题；事务保存正文与关系后返回 ID、修订和索引状态 |
 | `correct_memory` | `memory_id`、`expected_revision`、`request_id`、`reason`；可选 `content`、`scope`、`source_refs`、`memory_type`、`links` | 可更新正文、范围、类型或关系，省略关系时保留原有关系，显式空数组清空；追加修订，旧版本修改发生 `revision_conflict` |
@@ -37,10 +37,12 @@ MCP 不监听完整对话，也不自动把记忆注入每个回合。当前没�
 | 工具 | 用途 |
 | --- | --- |
 | `get_capabilities` | 首次检索前查询关键词／混合模式、语义状态与配置修订；不调用模型，不返回地址或密钥 |
-| `feedback_recall` | 按 recall_id 批量反馈实际评价过的条目与其中有用的条目；不能提交未返回的记忆或代其他 Agent 评价 |
+| `feedback_recall` | 按 recall_id 批量反馈该 Agent 已判断的返回项、有帮助的子集、可选的无用原因及实际使用结果 |
 | `get_setup_guide` | 按 setup、capture、secret、diagnostics 主题读取指南与权限，可携带已知指南版本减少静态正文 |
 | `get_navigation` | 分页读取当前空间的主题入口，可按已知项目筛选，不调用模型 |
 | `get_memory_links` | 按记忆读取结构化引用或反向引用，返回简短入口及依据是否变化，按需继续读取 |
+
+每个 `recalls[]` 可附 `negative_reasons: [{memory_id, reason}]`，每条最多一个原因。原因仅限 `scope_mismatch`（对象或范围不符）、`wrong_result_type`（结果类型不符）、`missing_detail`（缺少所问细节）。该 ID 必须在本次 `evaluated_memory_ids` 中，且不在 `useful_memory_ids` 中。原召回 Agent 可给既有负评补一次原因，重复提交同一原因幂等，遗漏该字段保留旧值，冲突时整批回滚。返回 `negative_reasons_recorded` 表示此次新增的原因数，补原因不重复计评价次数。
 
 ID 与 `request_id` 都是 UUID。`request_id` 是业务幂等键，不是 JSON-RPC ID；同一次写重试必须复用，参数改变却复用同一键会发生 `idempotency_conflict`。冲突后重新读取判断，不自动换成最新修订覆盖。更正可替换来源，也可保留上一修订来源；只改来源而不改正文 / 范围不是当前支持的操作。
 
@@ -50,11 +52,13 @@ ID 与 `request_id` 都是 UUID。`request_id` 是业务幂等键，不是 JSON-
 
 ### recall：只找已保存记忆
 
-当前是明确关键词检索，例如 `Chromie MySQL`，不承诺换一种自然说法仍能命中。服务先按空间检索，再校验 MySQL 当前修订和遗忘状态；已更正的旧索引候选不返回旧内容。默认不搜索、夹带或自动归纳全量原始对话，没有记忆就返回空结果。
+实例默认使用关键词检索；启用并就绪的向量索引可参与混合召回。服务先按空间检索，再校验 MySQL 当前修订和遗忘状态；已更正的旧索引候选不返回旧内容。默认不搜索、夹带或自动归纳全量原始对话，没有记忆就返回空结果。
+
+需要定位凭据时可传 `prefer_secret_refs: true`。服务在已匹配且可见的候选中，把存有密文的公开 Secret 引用放到最前，再执行条数和字符预算限制。同组内保留相关性顺序；没有匹配引用时照常返回相关说明。该参数不解密、不改变取用权限。
 
 待索引的新增 / 更正记录有大小写归一后的关键词子串兜底，最多检查 500 条。索引不可用时只检查最近 500 条有效记忆，返回 `index_available: false`、`partial: true`；不把有限兜底说成完整检索。Qdrant 每次取最多 30 个候选，最终最多返回 10 条，因此结果不是匹配总数或全量枚举。
 
-卡片带 ID、修订、内容、适用项目、时间、来源引用与处理状态。`source_linked` 只表示关联了原始证据，**不表示用户确认或执行验证**；没有来源则为 `unverified`。当前没有模型置信度、自动冲突发现或自动话题摘要。
+卡片带 ID、修订、适用项目、正文、来源名称、关联来源数 `source_count` 与索引状态。预算紧张时按排名保留靠前的条目，为每条尽量留出 160 个字符，再将余量分给较长正文。单条 `content_truncated` 表示其正文是否截短，顶层 `truncated` 也涵盖因预算省略的条目。要读完整正文、核对创建者或展开证据，传 `memory_id` 调用 `get_memory`。
 
 ### get_memory：按引用展开并分页
 

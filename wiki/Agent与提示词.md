@@ -22,9 +22,15 @@ Agent 通过 MCP 操作空间记忆，本机 CLI 负责接入、hook 采集和 S
 
 `get_capabilities` 当前返回 capability_version=2，包含检索模式、语义状态及 knowledge 的引用、反向引用、主题导航、关系数上限和 background_llm 标记。它是有限缓存的业务状态快照，不是网络探活或相关性保证。
 
+任务需要定位已有的凭据引用时，Agent 可在 recall 传 `prefer_secret_refs: true`。只有当前查询已经命中、范围匹配且有已存密文的引用会优先；普通排障、查操作方法沿用相关性排序。取用仍走原有验权流程。
+
 Agent 据此选择关键词／混合检索策略，再以本次 recall 的实际状态为准。Skill 不保存地址、Key 或一份永久有效的能力表；连接旧服务时按其真实工具与 Schema 使用，不能因新 Skill 中提到某能力就假定已上线。
 
-新增的 `get_navigation`、`get_memory_links` 属于只读入口；`remember`／`correct_memory` 扩展类型与关系字段。文本整理任务目前由 Web HTTP 创建，没有 MCP 整理工具。完整工具列表见 [MCP 接口设计](../docs/MCP接口设计.md)。
+新增的 `get_navigation`、`get_memory_links` 属于只读入口；`remember`／`correct_memory` 扩展类型与关系字段。实例启用对应自动任务后由服务调度；用户也可在 Web 选取消息发起提炼。完整工具列表见 [MCP 接口设计](../docs/MCP接口设计.md)。
+
+## 召回反馈
+
+Agent 在判断返回项后用 `feedback_recall` 记录哪些有用。对判断为无用的条目可选填一个原因（范围不符、结果类型不符、缺少细节），只传 ID 和枚举。原因随原召回和修订记录，用于查看召回质量。实际执行结果另填 `usage`，只有对应的使用报告才可能触发后台维护。具体选择见 [检索 Skill](../integrations/codex/plugin/skills/memory/references/retrieval.md)。
 
 ## Skill 的分发
 
@@ -42,7 +48,9 @@ chromie skill export --out ./chromie-memory
 
 hook 调用 `chromie capture`，必要时转换客户端事件输入；UUID、鉴权、上传、离线队列和补传由 CLI 统一处理。MCP 密钥与 hook 上传密钥分用途保存，不使用空间密码作为替代。
 
-采集形成 `source_events`，不会自动触发 recall 索引或消息提炼。Agent 主动 remember 与用户在 Web 发起 extract 是两种形成正式记忆的路径。Skill 负责说明怎样配合，不在后台持续监听对话。
+采集先写入 `source_events`。开启自动提炼后，后台按会话增量消费新事件，核对来源后新增或修订正式记忆。Agent 也可在对话中主动 `remember`，用户可在 Web 手动选择消息提炼。召回面向正式记忆。
+
+MCP 和 Web 的召回列表优先展示正文片段，来源数量供初步判断。Agent 收到 `content_truncated: true` 且片段缺少任务所需条件时，可用 MCP 的 `get_memory` 展开正文；需要原始依据时读 evidence 视图。
 
 ## 实现与验证
 

@@ -1,5 +1,5 @@
 import { SelectableText, SelectableArea } from "selectable-text.slint";
-import { Theme, SecretBadge, EyeButton } from "common.slint";
+import { Theme, SecretBadge, EyeButton, ActionButton } from "common.slint";
 import { MemoryFooter } from "memory-footer.slint";
 import { RecallRow } from "recall-models.slint";
 
@@ -10,6 +10,9 @@ export component RecallResult inherits Rectangle {
     private property <bool> expanded: false;
     private property <string> expanded-key;
     out property <bool> details-open: root.expanded && root.expanded-key == root.memory.view-key;
+    in property <bool> reader-open;
+    out property <bool> has-full-text: root.memory.content-truncated && !root.memory.is-secret && root.memory.memory-id != "";
+    callback read-full(string, int);
     callback show-secret(string, string);
     callback toggle-details;
     toggle-details => { root.expanded = !root.details-open; root.expanded-key = root.memory.view-key; }
@@ -31,6 +34,23 @@ export component RecallResult inherits Rectangle {
             if root.memory.is-secret: EyeButton { disabled: !root.memory.secret-stored || root.memory.memory-id == ""; activated => { root.show-secret(root.memory.memory-id, root.memory.content); } }
         }
         SelectableText { text: root.memory.content; text-color: Theme.ink; font-size: 15px; wrap: word-wrap; }
+        if root.has-full-text: HorizontalLayout {
+            alignment: start;
+            ActionButton {
+                label: "阅读全文"; subtle: true; height: 32px;
+                private property <string> origin-key;
+                in property <bool> reading: root.reader-open;
+                changed reading => {
+                    if !self.reading && self.origin-key != "" && self.origin-key == root.memory.view-key {
+                        self.origin-key = ""; self.focus();
+                    }
+                }
+                activated => {
+                    self.origin-key = root.memory.view-key;
+                    root.read-full(root.memory.memory-id, root.memory.revision);
+                }
+            }
+        }
         if root.memory.is-secret: Rectangle {
             height: secret-info.preferred-height;
             background: #f0faf6; border-radius: 10px;

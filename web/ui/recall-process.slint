@@ -14,6 +14,14 @@ component TimingTile inherits Rectangle {
     }
 }
 
+component TimingLine inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 8px;
+    SelectableText { text: root.label; text-color: Theme.secondary; font-size: 12px; horizontal-stretch: 1; }
+    SelectableText { text: root.value; text-color: Theme.ink; font-size: 12px; }
+}
+
 export component RecallProcess inherits Rectangle {
     min-width: 0px; max-width: 100000px; preferred-width: 320px;
     horizontal-stretch: 1; vertical-stretch: 0;
@@ -36,6 +44,13 @@ export component RecallProcess inherits Rectangle {
             spacing: 10px;
             TimingTile { label: "服务端召回"; value: root.overview.total-time; }
             TimingTile { label: "请求往返"; value: root.overview.client-time; }
+        }
+        if root.overview.has-diagnostics: VerticalLayout {
+            spacing: 8px;
+            TimingLine { label: "关键词候选"; value: root.overview.index-time; }
+            TimingLine { label: "语义候选"; value: root.overview.semantic-time; }
+            TimingLine { label: "MySQL 关键词兜底"; value: root.overview.fallback-time; }
+            Text { text: "关键词和语义并行检索。服务端总耗时还包括校验、排序和组装结果。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
         }
         if !root.overview.has-diagnostics: Text {
             text: "服务端未提供检索过程，记忆结果仍可查看。";
@@ -68,8 +83,7 @@ export component RecallProcess inherits Rectangle {
         if root.overview.has-diagnostics: VerticalLayout {
             spacing: 8px;
             Rectangle { height: 1px; background: Theme.border; }
-            SelectableText { text: "索引调用（含准备） " + root.overview.index-time; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
-            SelectableText { text: "Qdrant 内部 " + root.overview.qdrant-time; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+            SelectableText { text: "Qdrant 关键词查询内部耗时 " + root.overview.qdrant-time; text-color: Theme.muted; font-size: 11px; wrap: word-wrap; }
             Text { text: "业务耗时不含鉴权与 HTTP 传输。"; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
         }
     }

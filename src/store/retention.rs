@@ -75,7 +75,13 @@ impl Store {
                 )
                 .col_expr(
                     memory_revisions::Column::ChangeReason,
+                    // 仅首版的固定格式创建标记可继续指向后台任务。后续修订理由
+                    // 可以由用户填写，仍按原规则清理，不能据此恢复任意自由文本。
                     Expr::case(
+                        Expr::cust("revision = 1 AND IS_UUID(RIGHT(change_reason,36)) AND BINARY change_reason = BINARY CONCAT('后台 LLM 整理：任务 ',RIGHT(change_reason,36))"),
+                        Expr::col(memory_revisions::Column::ChangeReason),
+                    )
+                    .case(
                         Expr::col(memory_revisions::Column::ChangeReason).like("后台 LLM%"),
                         "后台 LLM 整理（历史正文已清理）",
                     )

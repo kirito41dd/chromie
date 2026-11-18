@@ -10,11 +10,35 @@ use crate::{
     text_model::{JobKind, Queue},
 };
 use sea_orm::{
-    Condition, ExprTrait, IntoActiveModel, PaginatorTrait, QueryOrder,
+    Condition, ExprTrait, IntoActiveModel, PaginatorTrait, QueryOrder, QueryTrait,
     sea_query::{Expr, Query},
 };
 
+pub(super) fn progress_value(total: u64, done: u64, auxiliary: bool) -> Value {
+    if auxiliary {
+        json!({"total":total,"completed":0,"pending":0,"excluded":total,"state":"auxiliary"})
+    } else {
+        json!({"total":total,"completed":done,"pending":total.saturating_sub(done)})
+    }
+}
+
 fn skip(config: i64) -> sea_orm::sea_query::SelectStatement {
+    // 旧版本遇到一次单项截断即永久阻断。冷却一天后只进入一次新策略；新策略任务
+    // 始终记录 output_retry_limit，连续失败仍阻断，不因每日调度无限复活。
+    let legacy_truncations = Query::select()
+        .column(jobs::Column::Id)
+        .from(jobs::Entity)
+        .and_where(
+            Expr::col((jobs::Entity, jobs::Column::SpaceId))
+                .equals((items::Entity, items::Column::SpaceId)),
+        )
+        .and_where(jobs::Column::ConfigRevision.eq(config))
+        .and_where(jobs::Column::LastError.eq("model_output_truncated"))
+        .and_where(jobs::Column::UpdatedAt.lte(now() - time::Duration::hours(24)))
+        .and_where(Expr::cust(
+            "JSON_EXTRACT(result, '$.diagnostic.output_retry_limit') IS NULL",
+        ))
+        .to_owned();
     Query::select()
         .expr(Expr::val(1))
         .from(items::Entity)
@@ -33,7 +57,13 @@ fn skip(config: i64) -> sea_orm::sea_query::SelectStatement {
                     .add(
                         Condition::any()
                             .add(items::Column::State.eq("queued"))
-                            .add(items::Column::State.eq("blocked"))
+                            .add(
+                                Condition::all()
+                                    .add(items::Column::State.eq("blocked"))
+                                    .add(Condition::any().add(items::Column::JobId.is_null()).add(
+                                        items::Column::JobId.not_in_subquery(legacy_truncations),
+                                    )),
+                            )
                             .add(items::Column::RunAfter.gt(now())),
                     ),
             ),
@@ -41,7 +71,7 @@ fn skip(config: i64) -> sea_orm::sea_query::SelectStatement {
         .to_owned()
 }
 fn due(config: i64) -> sea_orm::Select<events::Entity> {
-    events::Entity::find()
+    super::auxiliary::eligible(events::Entity::find())
         .filter(events::Column::ForgottenAt.is_null())
         .filter(events::Column::Body.is_not_null())
         .filter(Expr::exists(skip(config)).not())
@@ -370,7 +400,11 @@ impl Store {
             .count(db)
             .await?;
         let total = total.count(db).await?;
-        Ok(json!({"total":total,"completed":done,"pending":total.saturating_sub(done)}))
+        Ok(progress_value(
+            total,
+            done,
+            Self::auxiliary_conversation(db, space, key).await?,
+        ))
     }
     pub(super) async fn newer_consumed_event<C: ConnectionTrait>(
         db: &C,
@@ -411,18 +445,19 @@ impl Store {
         let base = events::Entity::find()
             .filter(events::Column::SpaceId.eq(space.bytes()))
             .filter(events::Column::ForgottenAt.is_null());
-        let total = base.clone().count(&self.db).await?;
+        let captured = base.clone().count(&self.db).await?;
+        let total = super::auxiliary::eligible(base.clone())
+            .count(&self.db)
+            .await?;
         let completed = items::Entity::find()
             .filter(items::Column::SpaceId.eq(space.bytes()))
             .filter(items::Column::State.eq("done"))
             .filter(
                 items::Column::EventId.in_subquery(
-                    Query::select()
+                    super::auxiliary::eligible(base)
+                        .select_only()
                         .column(events::Column::Id)
-                        .from(events::Entity)
-                        .and_where(events::Column::SpaceId.eq(space.bytes()))
-                        .and_where(events::Column::ForgottenAt.is_null())
-                        .to_owned(),
+                        .into_query(),
                 ),
             )
             .count(&self.db)
@@ -432,7 +467,7 @@ impl Store {
             .as_ref()
             .is_some_and(|s| s.usage_date == now().date() && s.attempts_today >= s.daily_limit);
         Ok(
-            json!({"enabled":enabled,"total":total,"completed":completed,"pending":total.saturating_sub(completed),"state":if config.is_none_or(|c|c.enabled==0){"unconfigured"}else if !enabled{"paused"}else if total==completed{"idle"}else if exhausted{"budget_limited"}else{"pending"}}),
+            json!({"enabled":enabled,"total":total,"excluded":captured.saturating_sub(total),"completed":completed,"pending":total.saturating_sub(completed),"state":if config.is_none_or(|c|c.enabled==0){"unconfigured"}else if !enabled{"paused"}else if total==completed{"idle"}else if exhausted{"budget_limited"}else{"pending"}}),
         )
     }
     pub(super) async fn release_extraction<C: ConnectionTrait>(

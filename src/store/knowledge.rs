@@ -23,14 +23,16 @@ impl Store {
             .all(db)
             .await?
             .into_iter()
-            .map(|row| {
-                Ok(Link {
-                    memory_id: uuid_from_bytes(&row.target_id)?,
-                    relation: Relation::parse(&row.relation)?,
-                    revision: row.target_revision,
-                })
-            })
+            .map(Self::decode_link)
             .collect()
+    }
+
+    pub(super) fn decode_link(row: memory_links::Model) -> Result<Link> {
+        Ok(Link {
+            memory_id: uuid_from_bytes(&row.target_id)?,
+            relation: Relation::parse(&row.relation)?,
+            revision: row.target_revision,
+        })
     }
 
     pub(super) async fn check_links<C: ConnectionTrait>(

@@ -1,6 +1,52 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, ActionButton } from "common.slint";
 import { SelectableText } from "selectable-text.slint";
+export struct ExtractionUsageView {
+    generated: string, recalled: string, evaluated: string, not-recalled: string,
+    reasons: string, has-memories: bool, loaded: bool,
+}
+component UsageMetric inherits VerticalLayout {
+    in property <string> count;
+    in property <string> caption;
+    spacing: 4px; horizontal-stretch: 1;
+    Text { text: root.count; color: Theme.ink; font-size: 22px; font-weight: 600; }
+    Text { text: root.caption; color: Theme.secondary; font-size: 12px; }
+}
+export component ExtractionUsageCard inherits Rectangle {
+    in property <ExtractionUsageView> stats;
+    in property <bool> loading;
+    in property <bool> failed;
+    callback refresh;
+    height: layout.preferred-height;
+    background: Theme.paper; border-radius: 12px; border-width: 1px; border-color: Theme.border;
+    layout := VerticalLayout {
+        padding: 18px; spacing: 12px; alignment: start;
+        HorizontalLayout {
+            spacing: 8px; cross-axis-alignment: center;
+            Text { text: "近 7 天的提炼记忆"; color: Theme.ink; font-size: 16px; font-weight: 600; wrap: word-wrap; horizontal-stretch: 1; }
+            ActionButton { label: "刷新"; subtle: true; height: 34px; min-width: 58px; disabled: root.loading; activated => { root.refresh(); } }
+        }
+        if root.stats.has-memories: HorizontalLayout {
+            spacing: 6px;
+            UsageMetric { count: root.stats.generated; caption: "新提炼"; }
+            UsageMetric { count: root.stats.recalled; caption: "已召回"; }
+            UsageMetric { count: root.stats.evaluated; caption: "已评价"; }
+            UsageMetric { count: root.stats.not-recalled; caption: "未召回"; }
+        }
+        if root.stats.has-memories: SelectableText {
+            text: "统计本空间从对话新提炼的普通记忆。同一条记忆被 Agent 多次召回或评价，均只计一条。";
+            text-color: Theme.secondary; font-size: 12px; wrap: word-wrap;
+        }
+        if root.stats.has-memories: SelectableText {
+            text: root.stats.reasons; text-color: Theme.ink; font-size: 13px; wrap: word-wrap;
+        }
+        if !root.stats.has-memories && (root.stats.loaded || !root.failed): Text {
+            text: root.stats.loaded ? "近 7 天还没有从对话中新提炼的普通记忆。" : "正在读取提炼统计…";
+            color: Theme.muted; font-size: 13px; wrap: word-wrap;
+        }
+        if root.failed: Text { text: "统计读取失败，点击刷新重试。"; color: Theme.danger; font-size: 13px; wrap: word-wrap; }
+    }
+}
 export struct ExtractionJob { id: string, time: string, label: string }
 component ExtractionJobRow inherits Rectangle {
     in property <ExtractionJob> item;

@@ -9,7 +9,7 @@ use axum::{
     Extension, Json,
     extract::{Path, State},
 };
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{OffsetDateTime, PrimitiveDateTime, format_description::well_known::Rfc3339};
@@ -24,7 +24,7 @@ pub struct SessionsQuery {
     pub as_of: Option<String>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, sea_orm::FromQueryResult)]
 #[serde(deny_unknown_fields)]
 pub struct Conversation {
     pub agent_id: Option<Uuid>,
@@ -74,7 +74,7 @@ pub struct Page<T> {
     pub conversation_info: Option<Value>,
 }
 
-fn boundary(page: u64, as_of: Option<&str>) -> Result<PrimitiveDateTime> {
+pub(crate) fn boundary(page: u64, as_of: Option<&str>) -> Result<PrimitiveDateTime> {
     if page > 500 {
         return Err(Error::invalid("页码超过上限，请刷新后重新浏览"));
     }
@@ -94,7 +94,7 @@ fn boundary(page: u64, as_of: Option<&str>) -> Result<PrimitiveDateTime> {
     Ok(value)
 }
 
-fn visible(space: SpaceId, at: PrimitiveDateTime) -> sea_orm::Select<events::Entity> {
+pub(crate) fn visible(space: SpaceId, at: PrimitiveDateTime) -> sea_orm::Select<events::Entity> {
     events::Entity::find()
         .filter(events::Column::SpaceId.eq(space.bytes()))
         .filter(events::Column::ForgottenAt.is_null())
@@ -113,85 +113,6 @@ fn in_conversation(
 }
 
 impl Store {
-    pub async fn message_sessions(
-        &self,
-        space: SpaceId,
-        input: SessionsQuery,
-    ) -> Result<Page<SessionRow>> {
-        let at = boundary(input.page, input.as_of.as_deref())?;
-        let tx = self.db.begin().await?;
-        let mut query = visible(space, at);
-        if let Some(id) = input.agent_id {
-            query = query.filter(events::Column::AgentId.eq(id.as_bytes().to_vec()));
-        }
-        let mut groups = query
-            .select_only()
-            .column(events::Column::AgentId)
-            .column(events::Column::SessionId)
-            .column_as(events::Column::Id.count(), "message_count")
-            .column_as(events::Column::ReceivedAt.max(), "latest_received")
-            .group_by(events::Column::AgentId)
-            .group_by(events::Column::SessionId)
-            .order_by_desc(events::Column::ReceivedAt.max())
-            .order_by_asc(events::Column::SessionId)
-            .order_by_asc(events::Column::AgentId)
-            .offset(input.page * 20)
-            .limit(21)
-            .into_tuple::<(Option<Vec<u8>>, String, i64, PrimitiveDateTime)>()
-            .all(&tx)
-            .await?;
-        let has_more = groups.len() > 20;
-        groups.truncate(20);
-        let mut items = Vec::new();
-        for (agent, session_id, message_count, received_at) in groups {
-            let key = Conversation {
-                agent_id: agent.as_deref().map(uuid_from_bytes).transpose()?,
-                session_id,
-            };
-            let latest = in_conversation(visible(space, at), &key)
-                .order_by_desc(events::Column::ReceivedAt)
-                .order_by_desc(events::Column::Id)
-                .one(&tx)
-                .await?
-                .ok_or_else(Error::missing)?;
-            let info = Self::conversation_info(&tx, space, &key).await?;
-            let fallback = in_conversation(visible(space, at), &key)
-                .filter(events::Column::Role.eq("user"))
-                .order_by_asc(events::Column::OccurredAt)
-                .order_by_asc(events::Column::Id)
-                .one(&tx)
-                .await?;
-            let title = info["title"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    fallback
-                        .and_then(|r| r.body)
-                        .unwrap_or_else(|| "未命名会话".into())
-                        .chars()
-                        .take(48)
-                        .collect()
-                });
-            items.push(SessionRow {
-                title,
-                extraction: info["extraction"].clone(),
-                origin: Self::source_label(&tx, space, agent.as_deref()).await?,
-                conversation: key,
-                preview: latest.body.unwrap_or_default().chars().take(120).collect(),
-                message_count,
-                received_at: timestamp(received_at)?,
-            });
-        }
-        tx.commit().await?;
-        Ok(Page {
-            items,
-            page: input.page,
-            has_more,
-            as_of: timestamp(at)?,
-            conversation_info: None,
-        })
-    }
-
     pub async fn conversation_messages(
         &self,
         space: SpaceId,

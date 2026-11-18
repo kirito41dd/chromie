@@ -85,6 +85,7 @@ impl Store {
                 revision: Set(revision),
                 useful: Set(None),
                 evaluated_at: Set(None),
+                negative_reason: Set(None),
                 use_outcome: Set(None),
                 use_reason: Set(None),
                 used_at: Set(None),
@@ -107,6 +108,7 @@ impl Store {
         let tx = self.begin(space).await?;
         let mut recorded = 0_u32;
         let mut replayed = 0_u32;
+        let mut negative_reasons_recorded = 0_u32;
         let mut usage_recorded = 0_u32;
         let mut usage_replayed = 0_u32;
         for evaluation in input.recalls {
@@ -123,6 +125,11 @@ impl Store {
                 return Err(Error::missing());
             }
             let useful: HashSet<_> = evaluation.useful_memory_ids.into_iter().collect();
+            let reasons: HashMap<_, _> = evaluation
+                .negative_reasons
+                .into_iter()
+                .map(|entry| (entry.memory_id, entry.reason.as_str()))
+                .collect();
             for id in evaluation.evaluated_memory_ids {
                 let head = Self::head(&tx, space, id).await?;
                 if head.forgotten_at.is_some() {
@@ -137,17 +144,34 @@ impl Store {
                 .await?
                 .ok_or_else(Error::missing)?;
                 let judgement = i8::from(useful.contains(&id));
-                if let Some(previous) = row.useful {
-                    if previous != judgement {
-                        return Err(Error::conflict("recall_feedback_conflict"));
-                    }
-                    replayed += 1;
-                } else {
+                let reason = reasons.get(&id).copied();
+                let conflicting_reason = row
+                    .negative_reason
+                    .as_deref()
+                    .zip(reason)
+                    .is_some_and(|(previous, new)| previous != new);
+                if row.useful.is_some_and(|previous| previous != judgement) || conflicting_reason {
+                    return Err(Error::conflict("recall_feedback_conflict"));
+                }
+                let new_vote = row.useful.is_none();
+                // 原因只能从空值补齐，省略或重复提交都保留原评价时间和原原因。
+                let new_reason = reason.filter(|_| row.negative_reason.is_none());
+                if new_vote || new_reason.is_some() {
                     let mut active = row.into_active_model();
-                    active.useful = Set(Some(judgement));
-                    active.evaluated_at = Set(Some(now()));
+                    if new_vote {
+                        active.useful = Set(Some(judgement));
+                        active.evaluated_at = Set(Some(now()));
+                    }
+                    if let Some(reason) = new_reason {
+                        active.negative_reason = Set(Some(reason.into()));
+                        negative_reasons_recorded += 1;
+                    }
                     active.update(&tx).await?;
+                }
+                if new_vote {
                     recorded += 1;
+                } else {
+                    replayed += 1;
                 }
             }
             for report in evaluation.usage {
@@ -197,9 +221,14 @@ impl Store {
             }
         }
         tx.commit().await?;
-        Ok(
-            json!({"recorded":recorded,"replayed":replayed,"usage_recorded":usage_recorded,"usage_replayed":usage_replayed,"usage_evidence":"agent_reported"}),
-        )
+        Ok(json!({
+            "recorded": recorded,
+            "replayed": replayed,
+            "negative_reasons_recorded": negative_reasons_recorded,
+            "usage_recorded": usage_recorded,
+            "usage_replayed": usage_replayed,
+            "usage_evidence": "agent_reported",
+        }))
     }
 
     /// 一次聚合取当前页面全部记忆，避免逐张卡片重复统计查询。

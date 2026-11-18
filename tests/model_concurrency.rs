@@ -222,6 +222,7 @@ async fn all_businesses_share_model_limit_and_live_updates_keep_inflight_account
             other,
             Recall {
                 query: "虚构并发".into(),
+                prefer_secret_refs: false,
                 project_key: None,
                 max_chars: Some(8000),
             },
@@ -255,6 +256,7 @@ async fn all_businesses_share_model_limit_and_live_updates_keep_inflight_account
             other,
             Recall {
                 query: "虚构并发".into(),
+                prefer_secret_refs: false,
                 project_key: None,
                 max_chars: Some(8000),
             },

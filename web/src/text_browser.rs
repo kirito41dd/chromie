@@ -18,6 +18,7 @@ extern "C" {
 struct State {
     config: Gate,
     jobs: Gate,
+    usage: Gate,
     loaded: bool,
     dirty: bool,
     jobs_loading: bool,
@@ -72,6 +73,21 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
     });
     ui.on_text_extract(queue_extract);
     ui.on_text_jobs_refresh(|| load(true));
+    ui.on_extraction_usage_refresh(|| {
+        if let Some((ui, session, state)) = active()
+            && ui.get_extraction_usage_visible()
+            && !ui.get_extraction_usage_loading()
+        {
+            ui.set_extraction_usage_loading(true);
+            let generation = state.borrow_mut().usage.begin("extraction-usage");
+            send(
+                &session.borrow().space,
+                "extraction-usage",
+                "{}",
+                generation,
+            );
+        }
+    });
 }
 
 pub(crate) fn clear() {
@@ -81,6 +97,10 @@ pub(crate) fn clear() {
         let mut s = state.borrow_mut();
         s.config.clear();
         s.jobs.clear();
+        s.usage.clear();
+        ui.set_extraction_usage(Default::default());
+        ui.set_extraction_usage_loading(false);
+        ui.set_extraction_usage_failed(false);
         s.loaded = false;
         s.dirty = false;
         s.jobs_loading = false;
@@ -232,6 +252,23 @@ pub fn receive_text_model(operation: String, generation: u32, status: u16, body:
         return;
     };
     if !ui.get_unlocked() {
+        return;
+    }
+    if operation == "extraction-usage" {
+        if state.borrow_mut().usage.accept(generation).as_deref() == Some(&operation) {
+            ui.set_extraction_usage_loading(false);
+            if status == 401 {
+                crate::browser::end_session();
+                return;
+            }
+            let stats = (status == 200)
+                .then(|| crate::extraction_usage::view(&body))
+                .flatten();
+            ui.set_extraction_usage_failed(stats.is_none());
+            if let Some(stats) = stats {
+                ui.set_extraction_usage(stats);
+            }
+        }
         return;
     }
     let job = matches!(operation.as_str(), "jobs" | "queue");

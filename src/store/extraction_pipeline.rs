@@ -129,6 +129,8 @@ impl Store {
         let (tx, current) = self.extraction_commit(row, lease, &snapshot).await?;
         let mut result = current.result.clone().unwrap_or_else(|| json!({}));
         result["phase"] = json!("review");
+        // 两阶段共用总领取计数；输出重试限额按阶段计算，生成用量不挤掉核对机会。
+        result["phase_attempts"] = json!(0);
         result["candidate_count"] =
             json!(snapshot.review.as_ref().map_or(0, |r| r.candidates.len()));
         let mut active = current.into_active_model();
@@ -323,6 +325,11 @@ impl Store {
             }
             let mut old = None;
             let mut created = None;
+            let revision_target = d
+                .replacement
+                .as_ref()
+                .map(|r| json!({"memory_id":r.memory_id,"revision":r.expected_revision}));
+            let mut rejection = None;
             if d.action == Action::Create {
                 let duplicate = snapshot
                     .memories
@@ -388,9 +395,13 @@ impl Store {
             if d.action == Action::ProposeRevision
                 && let Some(replacement) = &d.replacement
             {
-                if targets.get(&replacement.memory_id) == Some(&1)
-                    && !crate::extraction::incomplete_method(&replacement.content)
-                    && Self::autonomous_change_is_current(
+                use super::extraction_policy::RevisionBlock;
+                rejection = if targets.get(&replacement.memory_id) != Some(&1) {
+                    Some(RevisionBlock::AmbiguousTarget)
+                } else if crate::extraction::incomplete_method(&replacement.content) {
+                    Some(RevisionBlock::IncompleteMethod)
+                } else {
+                    Self::autonomous_change_is_current(
                         &tx,
                         space,
                         snapshot,
@@ -400,7 +411,8 @@ impl Store {
                         candidate.category,
                     )
                     .await?
-                {
+                };
+                if rejection.is_none() {
                     receipt = Some(
                         self.apply_replacement_tx(
                             &tx,
@@ -425,9 +437,10 @@ impl Store {
                     .await?;
                 } else {
                     d.action = Action::Defer;
-                    d.reason =
-                        "依据时序、目标唯一性或来源容量未通过校验，保留当前记忆，等待后续证据"
-                            .into();
+                    d.reason = rejection
+                        .map(RevisionBlock::message)
+                        .unwrap_or_default()
+                        .into();
                     d.replacement = None;
                 }
             }
@@ -435,7 +448,7 @@ impl Store {
                 let source = snapshot.events.iter().find(|s| s.event_id == proof.event_id);
                 json!({"event_id":proof.event_id,"quote":proof.quote,"role":source.map(|s|s.role.as_str()),"occurred_at":source.map(|s|s.occurred_at.as_str())})
             }).collect::<Vec<_>>();
-            records.push(json!({"evidence_details":evidence_details,"candidate_index":d.candidate_index,"action":d.action,"reason":d.reason,"content":content,"category":candidate.category,"source_refs":source_refs,"evidence":evidence,"replacement":d.replacement,"previous_content":old,"published_memory_id":created,"applied":receipt.is_some(),"resolution":if receipt.is_some(){Some("automatic")}else{None},"receipt":receipt}));
+            records.push(json!({"revision_target":revision_target,"rejection_code":rejection,"evidence_details":evidence_details,"candidate_index":d.candidate_index,"action":d.action,"reason":d.reason,"content":content,"category":candidate.category,"source_refs":source_refs,"evidence":evidence,"replacement":d.replacement,"previous_content":old,"published_memory_id":created,"applied":receipt.is_some(),"resolution":if receipt.is_some(){Some("automatic")}else{None},"receipt":receipt}));
         }
         // 无主要事项时保留原名/消息摘要，不让命名阻塞消息消费。
         if let Some(title) = &review.conversation_title {

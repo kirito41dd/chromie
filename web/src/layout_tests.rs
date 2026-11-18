@@ -10,6 +10,26 @@ slint::slint! {
     import { RecallPage, RecallColumns } from "../ui/recall.slint";
     import { RecallRow, RecallStage, RecallOverview } from "../ui/recall-models.slint";
     import { RecallResult } from "../ui/recall-card.slint";
+    import { MemoryReader } from "../ui/knowledge.slint";
+    export component RecallReaderHarness inherits Window {
+        width: 640px; height: 480px;
+        in property <RecallRow> card;
+        out property <bool> has-full-text: result.has-full-text;
+        out property <int> opened-revision;
+        out property <string> opened-id;
+        out property <bool> reading;
+        result := RecallResult {
+            width: root.width; memory: root.card; reader-open: root.reading;
+            read-full(id, revision) => {
+                root.opened-id = id; root.opened-revision = revision;
+                root.reading = true; reader.focus-close();
+            }
+        }
+        reader := MemoryReader {
+            visible: root.reading; width: root.width; height: root.height;
+            close => { root.reading = false; }
+        }
+    }
     import { SecretDialog, SecretContent } from "../ui/secret-dialog.slint";
     export component LayoutHarness inherits Window {
         // 与实际 Web 窗口使用同一随包字体，避免主机缺字或替代字体改变换行测量。
@@ -485,4 +505,62 @@ fn memory_column_uses_available_width_in_real_slint_layout() {
             "管理空间增加系统设置后导航仍不能重叠：{width}"
         );
     }
+}
+
+#[test]
+fn recall_reader_opens_only_for_clipped_public_text_and_restores_keyboard_focus() {
+    use slint::platform::{
+        Key, WindowEvent,
+        software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
+        update_timers_and_animations,
+    };
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(LayoutPlatform { window })).unwrap();
+    let ui = RecallReaderHarness::new().unwrap();
+    let card = RecallRow {
+        memory_id: "memory-a".into(),
+        view_key: "1:memory-a".into(),
+        revision: 3,
+        content: "虚构的搜索预览".into(),
+        ..Default::default()
+    };
+    ui.set_card(card.clone());
+    assert!(!ui.get_has_full_text());
+    ui.set_card(RecallRow {
+        is_secret: true,
+        content_truncated: true,
+        ..card.clone()
+    });
+    assert!(!ui.get_has_full_text());
+    ui.set_card(RecallRow {
+        content_truncated: true,
+        ..card
+    });
+    assert!(ui.get_has_full_text());
+    ui.show().unwrap();
+    let press = |key: slint::SharedString| {
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: key });
+        update_timers_and_animations();
+    };
+    for _ in 0..16 {
+        press(Key::Tab.into());
+        press(Key::Return.into());
+        if ui.get_reading() {
+            break;
+        }
+    }
+    assert!(ui.get_reading(), "键盘应能打开阅读全文");
+    assert_eq!(
+        (ui.get_opened_id().as_str(), ui.get_opened_revision()),
+        ("memory-a", 3)
+    );
+    press(Key::Escape.into());
+    assert!(!ui.get_reading());
+    press(" ".into());
+    assert!(ui.get_reading(), "关闭后空格应直接再次打开原卡片");
+    press(Key::Return.into());
+    assert!(!ui.get_reading(), "浮层打开后，关闭按钮应获得焦点");
 }

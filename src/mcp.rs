@@ -178,7 +178,7 @@ impl MemoryMcp {
     }
 
     #[tool(
-        description = "首次检索前用 get_capabilities 了解当前模式。找回当前空间已保存的记忆，不搜索原始对话；关键词模式用项目名、专名或关键术语，混合模式可用自然问法。只使用已知 project_key，核对命中对象和范围；分数表示相关，不保证包含答案，缺少事实时说明未记录。查看 retrieval_mode、semantic_available、semantic_reason 和 retrieval_revision 判断实际路径；降级后可用关键词补查一次。返回 recall_id，可用 feedback_recall 反馈实际判断过且有帮助的返回条目。",
+        description = "首次检索前用 get_capabilities 了解当前模式。找回当前空间已保存的记忆，不搜索原始对话；关键词模式用项目名、专名或关键术语，混合模式可用自然问法。找已有凭据引用时设 prefer_secret_refs=true，并带上服务或环境；排障和查方法沿用默认排序。只使用已知 project_key，核对命中对象和范围；分数表示相关，不保证包含答案，缺少事实时说明未记录。查看 retrieval_mode、semantic_available、semantic_reason 和 retrieval_revision 判断实际路径；降级后可用关键词补查一次。content_truncated 为真且片段不足以判断时，按 memory_id 用 get_memory 展开。返回 recall_id，可用 feedback_recall 反馈实际判断过且有帮助的返回条目。",
         annotations(read_only_hint = true, destructive_hint = false)
     )]
     async fn recall(
@@ -194,7 +194,7 @@ impl MemoryMcp {
     }
 
     #[tool(
-        description = "批量反馈当前任务中已判断的召回结果。使用 recall_id，只填实际返回且评价过的记忆 ID；useful_memory_ids 是 evaluated_memory_ids 中对本次任务有帮助的子集，未评价不要填。一次最多 20 次召回，每次 10 条。相同反馈重试不重复计数，矛盾反馈冲突；只接受原召回 Agent。usage 可独立反馈真正使用过的条目：succeeded 成功、content_outdated 内容过时、environment_blocked 环境受限、unverified 未验证；reason 只写公开简短原因，不含日志或凭据。服务固定到原召回修订。未验证可补充最终结果，最终结果冲突不能覆盖，新尝试用新的召回。只是 Agent 报告，不宣称独立验证。",
+        description = "批量反馈当前任务中已判断的召回结果。使用 recall_id，只填实际返回且评价过的记忆 ID；useful_memory_ids 是 evaluated_memory_ids 中对本次任务有帮助的子集，未评价不要填。可用 negative_reasons 给已评价且无用的条目标注范围不符、结果类型不符或缺少细节，每项只选一个，不能判断时省略。一次最多 20 次召回，每次 10 条。相同反馈重试不重复计数，矛盾反馈冲突；只接受原召回 Agent。usage 可独立反馈真正使用过的条目：succeeded 成功、content_outdated 内容过时、environment_blocked 环境受限、unverified 未验证；reason 只写公开简短原因，不含日志或凭据。服务固定到原召回修订。未验证可补充最终结果，最终结果冲突不能覆盖，新尝试用新的召回。只是 Agent 报告，不宣称独立验证。",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

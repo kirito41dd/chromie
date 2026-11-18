@@ -22,12 +22,16 @@ use uuid::Uuid;
 struct Mock {
     calls: AtomicUsize,
     fail: AtomicBool,
+    delay_next: AtomicBool,
 }
 async fn embed(
     State(mock): State<Arc<Mock>>,
     Json(body): Json<Value>,
 ) -> (axum::http::StatusCode, Json<Value>) {
     mock.calls.fetch_add(1, Ordering::SeqCst);
+    if mock.delay_next.swap(false, Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    }
     if mock.fail.load(Ordering::SeqCst) {
         return (axum::http::StatusCode::TOO_MANY_REQUESTS, Json(json!({})));
     }
@@ -85,6 +89,7 @@ async fn query(store: &Store, space: SpaceId, text: &str) -> Value {
             space,
             Recall {
                 query: text.into(),
+                prefer_secret_refs: false,
                 project_key: None,
                 max_chars: Some(8000),
             },
@@ -290,6 +295,7 @@ async fn per_generation_threshold_filters_both_lanes_without_losing_fresh_or_lit
                 owner,
                 Recall {
                     query: term.into(),
+                    prefer_secret_refs: false,
                     project_key: Some("current-project".into()),
                     max_chars: Some(8000),
                 },
@@ -327,6 +333,7 @@ async fn per_generation_threshold_filters_both_lanes_without_losing_fresh_or_lit
         .next()
         .unwrap()
         .to_owned();
+    mock.delay_next.store(true, Ordering::SeqCst);
     let web: Value = client
         .post(format!("{origin}/spaces/threshold-owner/recall"))
         .header("Origin", &origin)
@@ -341,6 +348,14 @@ async fn per_generation_threshold_filters_both_lanes_without_losing_fresh_or_lit
         .await
         .unwrap();
     assert!(contains(&web, covered));
+    let timing = &web["debug"]["timing"];
+    let keyword_ms = timing["index_call_ms"].as_f64().unwrap();
+    let semantic_ms = timing["semantic_call_ms"].as_f64().unwrap();
+    assert!(semantic_ms >= 345.0);
+    assert!(keyword_ms + 100.0 < semantic_ms, "{timing}");
+    assert!(timing["total_ms"].as_f64().unwrap() >= semantic_ms);
+    assert!(timing["fallback_ms"].as_f64().unwrap() >= 0.0);
+    eprintln!("延迟语义通道的 Web 召回计时 {timing}");
     assert_eq!(web["debug"]["embedding"]["filter"]["full_coverage_kept"], 1);
     let hit = web["debug"]["hits"]
         .as_array()
@@ -375,6 +390,7 @@ async fn per_generation_threshold_filters_both_lanes_without_losing_fresh_or_lit
             owner,
             Recall {
                 query: "key-code-1234".into(),
+                prefer_secret_refs: false,
                 project_key: Some("current-project".into()),
                 max_chars: Some(8000),
             },

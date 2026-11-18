@@ -95,6 +95,6 @@ async fn nullable_contract_migration_preserves_legacy_ciphertext_and_is_repeatab
     assert_eq!(after.contract, None);
     assert_eq!(
         Migrator::get_applied_migrations(&db).await.unwrap().len(),
-        15
+        Migrator::migrations().len()
     );
 }

@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! 主题入口和关联阅读共享登录态；响应代际隔离分页、返回与切换空间后的旧请求。
-use crate::{Dashboard, KnowledgeRow, messages::Gate, session::Session};
+use crate::{Dashboard, KnowledgeRow, messages::Gate, recall::RecallHit, session::Session};
 use serde_json::{Value, json};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{cell::RefCell, rc::Rc};
@@ -21,6 +21,7 @@ struct State {
     loaded: bool,
     nav_cursor: Option<String>,
     selected: String,
+    recall_hit: Option<RecallHit>,
     stack: Vec<String>,
     body: String,
     outgoing_cursor: Option<String>,
@@ -49,6 +50,18 @@ pub(crate) fn install(ui: &Dashboard, session: Rc<RefCell<Session>>) {
         })
     });
     ui.on_knowledge_read(|id| open(id.as_str(), true));
+    ui.on_read_recall_full(|id, revision| {
+        let Some((ui, _, state)) = active() else {
+            return;
+        };
+        if ui.get_recall_page() && ui.get_unlocked() {
+            state.borrow_mut().recall_hit = Some(RecallHit {
+                memory_id: id.to_string(),
+                revision,
+            });
+            open(id.as_str(), true);
+        }
+    });
     ui.on_knowledge_close(close);
     ui.on_knowledge_go_back(|| {
         let Some((_, _, state)) = active() else {
@@ -72,6 +85,7 @@ pub(crate) fn clear() {
         s.reader.clear();
         s.loaded = false;
         s.selected.clear();
+        s.recall_hit = None;
         s.stack.clear();
         s.body.clear();
         s.nav_cursor = None;
@@ -97,6 +111,7 @@ fn close() {
         let mut s = state.borrow_mut();
         s.reader.clear();
         s.selected.clear();
+        s.recall_hit = None;
         s.stack.clear();
         s.body.clear();
         ui.set_knowledge_open(false);
@@ -269,6 +284,11 @@ pub fn receive_knowledge(operation: String, generation: u32, status: u16, body: 
         if operation == "navigation" {
             ui.set_knowledge_nav_error("主题暂时无法读取，请刷新重试。".into());
         } else {
+            if operation == "memory" {
+                state.borrow_mut().body.clear();
+                ui.set_knowledge_body("".into());
+                ui.set_knowledge_title("记忆读取失败".into());
+            }
             ui.set_knowledge_error(
                 if status == 404 {
                     "这条记忆已不存在或已被遗忘。"
@@ -292,6 +312,9 @@ pub fn receive_knowledge(operation: String, generation: u32, status: u16, body: 
         }
         "memory" => {
             if value["hidden"] == true {
+                state.borrow_mut().body.clear();
+                ui.set_knowledge_body("".into());
+                ui.set_knowledge_title("记忆已被遗忘".into());
                 ui.set_knowledge_error("这条记忆已被遗忘。".into());
                 return;
             }
@@ -313,9 +336,21 @@ pub fn receive_knowledge(operation: String, generation: u32, status: u16, body: 
                     .collect::<String>()
                     .into(),
             );
+            let recall_note = s
+                .recall_hit
+                .as_ref()
+                .filter(|_| s.stack.is_empty())
+                .map(|hit| {
+                    hit.reading_note(
+                        &s.selected,
+                        value["revision"].as_i64().unwrap_or_default(),
+                        value["is_current"] != false,
+                    )
+                })
+                .unwrap_or_default();
             ui.set_knowledge_note(
                 format!(
-                    "{} · 修订 {}{}",
+                    "{} · 修订 {}{recall_note}{}",
                     if value["memory_type"] == "topic" {
                         "主题"
                     } else {

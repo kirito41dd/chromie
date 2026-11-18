@@ -49,6 +49,8 @@ struct CandidateFilter {
 struct Timing {
     total_ms: f64,
     index_call_ms: f64,
+    semantic_call_ms: Option<f64>,
+    fallback_ms: Option<f64>,
     qdrant_server_ms: Option<f64>,
 }
 
@@ -78,6 +80,8 @@ struct Selection {
     duplicates: usize,
     project_filtered: usize,
     missing_or_hidden: usize,
+    #[serde(default)]
+    revision_mismatch: usize,
     before_limit: usize,
     returned: usize,
     result_limit: usize,
@@ -142,6 +146,13 @@ impl Diagnostics {
             total_time: milliseconds(Some(self.timing.total_ms)).into(),
             index_time: milliseconds(Some(self.timing.index_call_ms)).into(),
             qdrant_time: milliseconds(self.timing.qdrant_server_ms).into(),
+            semantic_time: match self.embedding.as_ref().map(|e| e.state.as_str()) {
+                Some("disabled") => "未启用".into(),
+                Some("building") => "索引准备中".into(),
+                Some("empty") => "无可检索记忆".into(),
+                _ => milliseconds(self.timing.semantic_call_ms).into(),
+            },
+            fallback_time: milliseconds(self.timing.fallback_ms).into(),
             index_config: format!(
                 "{} · {}{}",
                 self.qdrant.field,
@@ -213,6 +224,12 @@ impl Diagnostics {
             self.selection.project_filtered,
             self.selection.missing_or_hidden
         );
+        if self.selection.revision_mismatch > 0 {
+            selection_note.push_str(&format!(
+                " · 读取时修订已变更 {}",
+                self.selection.revision_mismatch
+            ));
+        }
         if let Some(filter) = self.embedding.as_ref().and_then(|e| e.filter.as_ref())
             && filter.method == "candidate_gate"
             && filter.threshold.is_finite()
@@ -354,6 +371,23 @@ mod tests {
         });
         let diagnostic: Diagnostics = serde_json::from_value(body.clone()).unwrap();
         assert_eq!(diagnostic.overview().qdrant_time.as_str(), "未提供");
+        assert_eq!(diagnostic.overview().fallback_time.as_str(), "未提供");
+        body["timing"]["semantic_call_ms"] = serde_json::json!(354.75);
+        body["timing"]["fallback_ms"] = serde_json::json!(1.25);
+        body["embedding"] = serde_json::json!({"state":"ready"});
+        let measured: Diagnostics = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(measured.overview().semantic_time.as_str(), "354.75 ms");
+        assert_eq!(measured.overview().fallback_time.as_str(), "1.25 ms");
+        body["selection"]["revision_mismatch"] = serde_json::json!(2);
+        body["embedding"]["state"] = serde_json::json!("disabled");
+        let disabled: Diagnostics = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(disabled.overview().semantic_time.as_str(), "未启用");
+        assert!(
+            disabled
+                .stages()
+                .iter()
+                .any(|stage| stage.note.contains("读取时修订已变更 2"))
+        );
         let stages = diagnostic.stages();
         assert_eq!(stages.len(), 4);
         assert_eq!(stages[0].value.as_str(), "未完成");

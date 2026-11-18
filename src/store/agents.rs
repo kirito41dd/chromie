@@ -324,11 +324,22 @@ impl Store {
         id: Option<&[u8]>,
     ) -> Result<Value> {
         let Some(bytes) = id else {
-            return Ok(json!({"agent_id":null,"agent_name":"历史记录"}));
+            return Ok(Self::format_source_label(None));
         };
         let row = Self::agent_row(db, space, uuid_from_bytes(bytes)?).await?;
-        Ok(
-            json!({"agent_id":uuid_from_bytes(&row.id)?,"agent_name":row.name,"client_type":row.client_type}),
-        )
+        Ok(Self::format_source_label(Some((
+            uuid_from_bytes(&row.id)?,
+            row.name,
+            row.client_type,
+        ))))
+    }
+
+    pub(super) fn format_source_label(agent: Option<(Uuid, String, String)>) -> Value {
+        match agent {
+            Some((id, name, client)) => {
+                json!({"agent_id":id,"agent_name":name,"client_type":client})
+            }
+            None => json!({"agent_id":null,"agent_name":"历史记录"}),
+        }
     }
 }

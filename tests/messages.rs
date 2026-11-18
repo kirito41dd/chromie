@@ -83,7 +83,7 @@ async fn insert(
 #[tokio::test]
 #[ignore = "需要真实隔离 MySQL；见开发运行文档"]
 async fn conversations_isolate_space_and_agent_and_paginate_a_stable_snapshot() {
-    let (store, space, other) = fixture().await;
+    let (mut store, space, other) = fixture().await;
     let (a, _, _) = support::grant(&store, space, false).await;
     let (b, _, _) = support::grant(&store, space, false).await;
     let at = now() - time::Duration::seconds(200);
@@ -231,6 +231,12 @@ async fn conversations_isolate_space_and_agent_and_paginate_a_stable_snapshot() 
         )
         .await;
     }
+    let selects = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let query_count = selects.clone();
+    store.db.set_metric_callback(move |_| {
+        query_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    let start = std::time::Instant::now();
     let first_page = store
         .message_sessions(
             space,
@@ -241,6 +247,15 @@ async fn conversations_isolate_space_and_agent_and_paginate_a_stable_snapshot() 
         )
         .await
         .unwrap();
+    eprintln!(
+        "分页 20 个会话：{} 次 SQL，耗时 {:?}",
+        selects.load(std::sync::atomic::Ordering::Relaxed),
+        start.elapsed()
+    );
+    assert!(
+        (1..=3).contains(&selects.load(std::sync::atomic::Ordering::Relaxed)),
+        "读取一页摘要的查询次数应与会话数无关"
+    );
     assert_eq!(first_page.items.len(), 20);
     assert!(first_page.has_more);
     insert(
@@ -291,6 +306,149 @@ async fn conversations_isolate_space_and_agent_and_paginate_a_stable_snapshot() 
 
 #[tokio::test]
 #[ignore = "需要真实隔离 MySQL；见开发运行文档"]
+async fn session_summaries_keep_snapshot_previews_and_current_extraction_separate() {
+    use chromie::{entity::extraction_items, messages::Conversation, types::timestamp};
+    let (store, space, _) = fixture().await;
+    let (agent, _, _) = support::grant(&store, space, false).await;
+    let at = now() - time::Duration::seconds(10);
+    let session = "shared-summary";
+    let first = insert(&store, space, Some(agent), session, "最早用户消息", 0, at).await;
+    let long = "这是带中文的很长预览".repeat(32);
+    insert(&store, space, Some(agent), session, &long, 1, at).await;
+    insert(&store, space, None, session, "历史助手独立会话", 1, at).await;
+    insert(
+        &store,
+        space,
+        Some(agent),
+        "Shared-Summary",
+        "大小写不同的会话",
+        0,
+        at,
+    )
+    .await;
+    let fallback = store
+        .message_sessions(space, SessionsQuery::default())
+        .await
+        .unwrap();
+    let named = fallback
+        .items
+        .iter()
+        .find(|row| {
+            row.conversation.agent_id == Some(agent) && row.conversation.session_id == session
+        })
+        .unwrap();
+    assert_eq!(named.title, "最早用户消息");
+    let legacy = fallback
+        .items
+        .iter()
+        .find(|row| row.conversation.agent_id.is_none())
+        .unwrap();
+    assert_eq!(legacy.title, "未命名会话");
+    assert_eq!(
+        legacy.origin,
+        json!({"agent_id":null,"agent_name":"历史记录"})
+    );
+    store
+        .set_conversation_title(
+            space,
+            Conversation {
+                agent_id: Some(agent),
+                session_id: session.into(),
+            },
+            0,
+            Some("固定标题".into()),
+        )
+        .await
+        .unwrap();
+    extraction_items::ActiveModel {
+        space_id: Set(space.bytes()),
+        event_id: Set(first.as_bytes().to_vec()),
+        config_revision: Set(1),
+        state: Set("done".into()),
+        job_id: Set(None),
+        run_after: Set(now()),
+        last_error: Set(None),
+        updated_at: Set(now()),
+    }
+    .insert(&store.db)
+    .await
+    .unwrap();
+    let later = at + time::Duration::seconds(2);
+    insert(
+        &store,
+        space,
+        Some(agent),
+        session,
+        "快照外的新消息",
+        0,
+        later,
+    )
+    .await;
+    insert(
+        &store,
+        space,
+        None,
+        session,
+        "This is an app-generated request for a suggested next user message. example",
+        0,
+        later,
+    )
+    .await;
+    let page = store
+        .message_sessions(
+            space,
+            SessionsQuery {
+                as_of: Some(timestamp(at + time::Duration::seconds(1)).unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 3);
+    for row in page.items {
+        if row.conversation.session_id == "Shared-Summary" {
+            assert_eq!(row.title, "大小写不同的会话");
+            assert_eq!(row.extraction, json!({"total":1,"completed":0,"pending":1}));
+            continue;
+        }
+        let detail = store
+            .conversation_messages(
+                space,
+                MessagesQuery {
+                    agent_id: row.conversation.agent_id,
+                    session_id: session.into(),
+                    page: 0,
+                    as_of: Some(page.as_of.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            row.extraction,
+            detail.conversation_info.unwrap()["extraction"]
+        );
+        if row.conversation.agent_id == Some(agent) {
+            assert_eq!(row.message_count, 2);
+            assert_eq!(row.title, "固定标题");
+            assert_eq!(row.preview, long.chars().take(120).collect::<String>());
+            assert_eq!(
+                row.extraction,
+                json!({"total":3, "completed":1, "pending":2})
+            );
+        } else {
+            assert_eq!(row.message_count, 1);
+            assert_eq!(row.title, "未命名会话");
+            assert_eq!(row.preview, "历史助手独立会话");
+            assert_eq!(
+                row.extraction,
+                json!({"total":2,"completed":0,"pending":0,"excluded":2,"state":"auxiliary"})
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "需要真实隔离 MySQL；见开发运行文档"]
 async fn web_browsing_requires_current_space_cookie_and_same_origin() {
     let (store, space, other) = fixture().await;
     let (a, mcp, hook) = support::grant(&store, space, false).await;
@@ -331,6 +489,28 @@ async fn web_browsing_requires_current_space_cookie_and_same_origin() {
         .next()
         .unwrap()
         .to_owned();
+    let usage_url = format!("{base}/spaces/{slug}/knowledge/extraction-usage");
+    assert_eq!(client.get(&usage_url).send().await.unwrap().status(), 401);
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/spaces/{other_slug}/knowledge/extraction-usage"
+            ))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let response = client
+        .get(&usage_url)
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<Value>().await.unwrap()["generated"], 0);
     for response in [
         client
             .post(format!("{prefix}/sessions"))
@@ -428,3 +608,6 @@ async fn web_browsing_requires_current_space_cookie_and_same_origin() {
     );
     task.abort();
 }
+
+#[path = "messages/extraction_usage.rs"]
+mod extraction_usage;

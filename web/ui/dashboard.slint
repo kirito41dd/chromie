@@ -1,4 +1,4 @@
-import { ExtractionResults, ExtractionReader, ExtractionJob, ExtractionDecision } from "extraction.slint";
+import { ExtractionUsageView, ExtractionUsageCard, ExtractionResults, ExtractionReader, ExtractionJob, ExtractionDecision } from "extraction.slint";
 import { TransferPage, TransferRow, TransferUnlockDialog } from "transfer.slint";
 import { TopicNavigation, MemoryReader, KnowledgeRow } from "knowledge.slint";
 import { ProviderSettings, OrganizationSettings } from "provider-settings.slint";
@@ -305,6 +305,12 @@ export component Dashboard inherits Window {
     callback text-model-disable;
     callback text-extract;
     callback text-jobs-refresh;
+    callback extraction-usage-refresh;
+    in property <ExtractionUsageView> extraction-usage;
+    in property <bool> extraction-usage-loading;
+    in property <bool> extraction-usage-failed;
+    out property <bool> extraction-usage-visible: root.unlocked && root.messages-page && root.messages-results-page;
+    changed extraction-usage-visible => { if self.extraction-usage-visible { root.extraction-usage-refresh(); } }
     in property <[ExtractionJob]> extraction-jobs;
     in property <bool> text-jobs-loading;
     in property <string> text-jobs-read-error;
@@ -336,6 +342,7 @@ export component Dashboard inherits Window {
     in property <string> knowledge-error;
     in property <string> knowledge-nav-error;
     callback knowledge-read(string);
+    callback read-recall-full(string, int);
     callback knowledge-close;
     callback knowledge-go-back;
     callback knowledge-more(bool);
@@ -344,7 +351,7 @@ export component Dashboard inherits Window {
     callback knowledge-focus;
     knowledge-focus => { memory-reader.focus-close(); }
     callback knowledge-return-focus;
-    knowledge-return-focus => { app-header.focus-current(); }
+    knowledge-return-focus => { if !root.recall-page { app-header.focus-current(); } }
     in property <bool> model-usage-available;
     in property <UsageTotal> model-usage-today;
     in property <UsageTotal> model-usage-week;
@@ -807,6 +814,10 @@ export component Dashboard inherits Window {
                             horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
                             VerticalLayout {
                                 x: 0px; y: 0px; width: results-scroll.visible-width; height: self.preferred-height; alignment: start; spacing: 12px;
+                                ExtractionUsageCard {
+                                    stats: root.extraction-usage; loading: root.extraction-usage-loading; failed: root.extraction-usage-failed;
+                                    refresh => { root.extraction-usage-refresh(); }
+                                }
                                 if root.text-jobs-read-error != "": Rectangle {
                                     height: result-error.preferred-height; background: Theme.danger-soft; border-radius: 10px;
                                     result-error := VerticalLayout {
@@ -847,7 +858,8 @@ export component Dashboard inherits Window {
                         recall-query <=> root.recall-query;
                         recall-loading: root.recall-loading; recall-done: root.recall-done;
                         recall-note: root.recall-note; recall-error: root.recall-error;
-                        recall-results: root.recall-results;
+                        recall-results: root.recall-results; reader-open: root.knowledge-open;
+                        read-full(id, revision) => { root.read-recall-full(id, revision); }
                         show-secret(id, label) => { root.show-secret(id, label); }
                         overview: root.recall-overview; stages: root.recall-stages;
                         recall => { root.recall(); }

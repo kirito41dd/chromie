@@ -90,6 +90,6 @@ async fn schema_first_upgrade_preserves_data_and_rejects_truncation() {
     assert_eq!(preserved.body.as_deref(), Some(short));
     assert_eq!(
         Migrator::get_applied_migrations(&db).await.unwrap().len(),
-        15
+        Migrator::migrations().len()
     );
 }

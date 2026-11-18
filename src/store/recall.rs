@@ -1,4 +1,7 @@
-use super::{read::budget, *};
+mod fallback;
+mod preview;
+
+use super::{read::CardView, *};
 use crate::{
     retrieval_policy::{KeywordMatch, KeywordQuery},
     search::{CANDIDATE_LIMIT, TEXT_FIELD},
@@ -13,6 +16,13 @@ use std::{
 const FALLBACK_LIMIT: usize = 500;
 const RESULT_LIMIT: usize = 10;
 
+// 在各自 Future 完成时取样，避免较快的一路计入等待另一路的时间。
+async fn timed<T>(operation: impl Future<Output = T>) -> (T, f64) {
+    let started = Instant::now();
+    let result = operation.await;
+    (result, started.elapsed().as_secs_f64() * 1000.0)
+}
+
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum MatchPath {
@@ -23,11 +33,12 @@ enum MatchPath {
     RecentKeyword,
 }
 
+#[derive(Clone)]
 struct Candidate {
     id: Uuid,
     path: MatchPath,
     score: Option<f32>,
-    indexed_revision: Option<i32>,
+    revision: i32,
     semantic_score: Option<f32>,
     fusion_score: Option<f64>,
     keyword_match: Option<KeywordMatch>,
@@ -46,10 +57,28 @@ struct HitDebug {
 }
 
 impl Candidate {
+    fn local_keyword(&self) -> bool {
+        matches!(
+            self.path,
+            MatchPath::PendingKeyword | MatchPath::RecentKeyword
+        )
+    }
+
+    fn matches_card(&self, card: &Value, terms: &[String]) -> bool {
+        let Some(revision) = card["revision"].as_i64() else {
+            return false;
+        };
+        revision == i64::from(self.revision)
+            || (self.local_keyword()
+                && card["content"]
+                    .as_str()
+                    .is_some_and(|content| fallback::matches(terms, content)))
+    }
+
     fn debug(&self, current_revision: Option<i64>) -> HitDebug {
-        let matches = self
-            .indexed_revision
-            .map(|revision| Some(i64::from(revision)) == current_revision);
+        let same_revision = current_revision == Some(i64::from(self.revision));
+        let indexed_revision = (!self.local_keyword()).then_some(self.revision);
+        let matches = indexed_revision.map(|_| same_revision);
         HitDebug {
             memory_id: self.id,
             path: self.path,
@@ -57,12 +86,12 @@ impl Candidate {
             bm25_score: self
                 .score
                 .filter(|score| score.is_finite() && matches == Some(true)),
-            indexed_revision: self.indexed_revision,
+            indexed_revision,
             score_matches_revision: matches,
             semantic_score: self
                 .semantic_score
                 .filter(|score| score.is_finite() && matches == Some(true)),
-            fusion_score: self.fusion_score.filter(|_| matches != Some(false)),
+            fusion_score: self.fusion_score.filter(|_| same_revision),
             keyword_match: self.keyword_match.filter(|_| matches == Some(true)),
         }
     }
@@ -101,26 +130,33 @@ impl Store {
             bounded(project, 128)?;
         }
         // 先拍下待同步集合，避免索引在查询过程中完成导致兜底遗漏。
+        let snapshot_started = Instant::now();
         let mut pending = outbox_tasks::Entity::find()
+            .select_only()
+            .column(outbox_tasks::Column::MemoryId)
             .filter(outbox_tasks::Column::SpaceId.eq(space.bytes()))
             .filter(outbox_tasks::Column::State.eq("pending"))
             .order_by_asc(outbox_tasks::Column::UpdatedAt)
+            .order_by_asc(outbox_tasks::Column::MemoryId)
             .limit((FALLBACK_LIMIT + 1) as u64)
+            .into_tuple::<Vec<u8>>()
             .all(&self.db)
             .await?;
+        let snapshot_elapsed = snapshot_started.elapsed();
         let pending_limited = pending.len() > FALLBACK_LIMIT;
         let mut partial = pending_limited;
         pending.truncate(FALLBACK_LIMIT);
-        let index_started = Instant::now();
-        let (search, semantic) = tokio::join!(
-            self.search
-                .query_report(space, &input.query, input.project_key.as_deref()),
-            self.embedding_candidates_guarded(
+        let ((search, index_call_ms), (semantic, semantic_call_ms)) = tokio::join!(
+            timed(
+                self.search
+                    .query_report(space, &input.query, input.project_key.as_deref())
+            ),
+            timed(self.embedding_candidates_guarded(
                 space,
                 &input.query,
                 input.project_key.as_deref(),
-                admission
-            )
+                admission,
+            )),
         );
         let (semantic_hits, mut embedding_debug, semantic_filter) =
             semantic.unwrap_or_else(|error| {
@@ -131,7 +167,6 @@ impl Store {
                 )
             });
         let semantic_available = embedding_debug["state"] == "ready";
-        let index_call_ms = index_started.elapsed().as_secs_f64() * 1000.0;
         let available = search.is_ok();
         let mut candidates = Vec::new();
         let mut index_candidates = 0;
@@ -150,7 +185,7 @@ impl Store {
                             id: hit.id,
                             path: MatchPath::QdrantBm25,
                             score: Some(hit.score),
-                            indexed_revision: Some(hit.revision),
+                            revision: hit.revision,
                             semantic_score: None,
                             fusion_score: None,
                             keyword_match: None,
@@ -162,57 +197,24 @@ impl Store {
                 }
             }
         }
-        let fallback: Vec<Uuid> = if available {
-            pending
-                .into_iter()
-                .map(|row| uuid_from_bytes(&row.memory_id))
-                .collect::<Result<_>>()?
-        } else {
-            partial = true;
-            memories::Entity::find()
-                .filter(memories::Column::SpaceId.eq(space.bytes()))
-                .filter(memories::Column::ForgottenAt.is_null())
-                .order_by_desc(memories::Column::UpdatedAt)
-                .limit(FALLBACK_LIMIT as u64)
-                .all(&self.db)
-                .await?
-                .into_iter()
-                .map(|row| uuid_from_bytes(&row.id))
-                .collect::<Result<_>>()?
-        };
+        let fallback_started = Instant::now();
         let terms = input
             .query
             .split_whitespace()
             .take(8)
             .map(str::to_lowercase)
             .collect::<Vec<_>>();
-        let fallback_examined = fallback.len();
         let fallback_path = if available {
             MatchPath::PendingKeyword
         } else {
+            partial = true;
             MatchPath::RecentKeyword
         };
-        let mut fallback_matches = 0;
-        for id in fallback {
-            let head = Self::head(&self.db, space, id).await?;
-            if head.forgotten_at.is_some() {
-                continue;
-            }
-            let row = Self::revision(&self.db, &head).await?;
-            let content = row.content.unwrap_or_default().to_lowercase();
-            if terms.iter().any(|term| content.contains(term)) {
-                fallback_matches += 1;
-                candidates.push(Candidate {
-                    id,
-                    path: fallback_path,
-                    score: None,
-                    indexed_revision: None,
-                    semantic_score: None,
-                    fusion_score: None,
-                    keyword_match: None,
-                });
-            }
-        }
+        let (fallback_examined, fallback_hits) =
+            fallback::candidates(&self.db, space, pending, fallback_path, &terms).await?;
+        let fallback_matches = fallback_hits.len();
+        candidates.extend(fallback_hits);
+        let fallback_ms = (snapshot_elapsed + fallback_started.elapsed()).as_secs_f64() * 1000.0;
         let mut valid_semantic = Vec::new();
         for hit in semantic_hits {
             match Self::head(&self.db, space, hit.id).await {
@@ -223,7 +225,7 @@ impl Store {
                         id: hit.id,
                         path: MatchPath::QdrantVector,
                         score: None,
-                        indexed_revision: Some(hit.revision),
+                        revision: hit.revision,
                         semantic_score: Some(hit.score),
                         fusion_score: None,
                         keyword_match: None,
@@ -258,9 +260,10 @@ impl Store {
         let mut duplicates = 0;
         let mut project_filtered = 0;
         let mut missing_or_hidden = 0;
+        let mut revision_mismatch = 0;
         for candidate in candidates {
             let id = candidate.id;
-            if !seen.insert(id) {
+            if seen.contains(&id) {
                 duplicates += 1;
                 continue;
             }
@@ -275,7 +278,12 @@ impl Store {
             {
                 continue;
             }
-            let card = match Self::card(&self.db, space, id, None).await {
+            let view = if admission.is_some() {
+                CardView::Detail(None)
+            } else {
+                CardView::Recall
+            };
+            let card = match Self::card(&self.db, space, id, view).await {
                 Ok(card) => card,
                 Err(error) if error.code == "not_found" => {
                     missing_or_hidden += 1;
@@ -286,10 +294,9 @@ impl Store {
             if card["memory_type"] == "topic_alias" {
                 continue;
             }
-            if candidate.semantic_score.is_some()
-                && candidate.indexed_revision.map(i64::from)
-                    != card.get("revision").and_then(Value::as_i64)
-            {
+            // 卡片可在索引校验与读取之间被更正。旧证据失效后，仍允许同 ID 的最新兜底候选。
+            if !candidate.matches_card(&card, &terms) {
+                revision_mismatch += 1;
                 continue;
             }
             if let Some(project) = &input.project_key
@@ -305,20 +312,31 @@ impl Store {
                     candidate.debug(card.get("revision").and_then(Value::as_i64)),
                 );
             }
+            seen.insert(id);
             cards.push(card);
+        }
+        if input.prefer_secret_refs {
+            // 在条数和正文预算截断前稳定排序，只提升已通过检索、范围校验且存有密文的引用。
+            cards.sort_by_key(|card| {
+                !(card["kind"] == "secret_ref" && card["secret_stored"] == true)
+            });
         }
         let before_limit = cards.len();
         if cards.len() > RESULT_LIMIT {
             partial = true;
             cards.truncate(RESULT_LIMIT);
         }
-        let mut result = budget(
-            json!({"memories":cards,"index_available":available,"partial":partial,"truncated":false,
-                "retrieval_mode":if semantic_available{"hybrid"}else{"keyword"},"semantic_available":semantic_available,
-                "semantic_reason":embedding_debug.get("reason"),"retrieval_revision":embedding_debug.get("config_revision"),
-                "similarity_threshold":embedding_debug.get("similarity_threshold")}),
-            maximum,
-        );
+        let mut result = json!({"index_available":available,"partial":partial,"truncated":false,
+            "retrieval_mode":if semantic_available{"hybrid"}else{"keyword"},"semantic_available":semantic_available,
+            "semantic_reason":embedding_debug.get("reason"),"retrieval_revision":embedding_debug.get("config_revision"),
+            "similarity_threshold":embedding_debug.get("similarity_threshold")});
+        result = if admission.is_some() {
+            // 后台核对依赖原候选集合；客户端预览长度不改变提炼输入。
+            result["memories"] = Value::Array(cards);
+            super::read::budget(result, maximum)
+        } else {
+            preview::pack(cards, result, maximum)
+        };
         // 只统计最终交付的条目；统计故障不掩盖已经取得的记忆结果。
         if admission.is_none() {
             match self.record_recall(space, &result, with_debug).await {
@@ -378,13 +396,13 @@ impl Store {
             result["debug"] = json!({
                 "embedding":embedding_debug,
                 "fusion":{"method":"rrf","k":60},
-                "timing":{"total_ms":started.elapsed().as_secs_f64()*1000.0,"index_call_ms":index_call_ms,"qdrant_server_ms":server_ms},
+                "timing":{"total_ms":started.elapsed().as_secs_f64()*1000.0,"index_call_ms":index_call_ms,"semantic_call_ms":semantic_call_ms,"fallback_ms":fallback_ms,"qdrant_server_ms":server_ms},
                 "qdrant":{"available":available,"field":TEXT_FIELD,"tokenizer":"multilingual","tokens_available":false,
                     "candidate_limit":CANDIDATE_LIMIT,"candidates":index_candidates,"validated":index_validated,
                     "discarded":index_candidates.saturating_sub(index_validated)},
                 "fallback":{"mode":fallback_path,"terms":terms,"candidate_limit":FALLBACK_LIMIT,
                     "examined":fallback_examined,"matches":fallback_matches,"pending_snapshot_limited":pending_limited},
-                "selection":{"duplicates":duplicates,"project_filtered":project_filtered,"missing_or_hidden":missing_or_hidden,
+                "selection":{"duplicates":duplicates,"project_filtered":project_filtered,"missing_or_hidden":missing_or_hidden,"revision_mismatch":revision_mismatch,
                     "before_limit":before_limit,"returned":hits.len(),"result_limit":RESULT_LIMIT,"max_chars":maximum},
                 "hits":hits
             });
@@ -405,7 +423,7 @@ impl Store {
     ) -> Result<Value> {
         let mut scores = semantic
             .iter()
-            .filter_map(|row| Some((row.id, (row.semantic_score?, row.indexed_revision?))))
+            .filter_map(|row| Some((row.id, (row.semantic_score?, row.revision))))
             .collect::<HashMap<_, _>>();
         let ids = keyword
             .iter()
@@ -440,7 +458,7 @@ impl Store {
         for mut row in keyword.drain(..) {
             if matches!(row.path, MatchPath::QdrantBm25) {
                 if let Some((score, revision)) = scores.get(&row.id).copied()
-                    && row.indexed_revision == Some(revision)
+                    && row.revision == revision
                 {
                     if !filter.threshold.accepts(score) {
                         let head = match Self::head(&self.db, space, row.id).await {
@@ -492,30 +510,40 @@ impl Store {
 
 // 按各自名次融合，BM25 分数和余弦相似度不能直接相加。
 fn fuse(keyword: Vec<Candidate>, semantic: Vec<Candidate>) -> Vec<Candidate> {
-    let mut merged: HashMap<Uuid, Candidate> = HashMap::new();
+    // RRF 排名可去重，但不能消灭同修订的独立词面证据。若输出时已更正，
+    // 索引排名失效；最后仍可用当前正文复核真正进入过兜底窗口的候选。
+    let indexed: HashSet<_> = keyword
+        .iter()
+        .chain(&semantic)
+        .filter(|candidate| !candidate.local_keyword())
+        .map(|candidate| (candidate.id, candidate.revision))
+        .collect();
+    let fallback_proofs: Vec<_> = keyword
+        .iter()
+        .filter(|candidate| {
+            candidate.local_keyword() && indexed.contains(&(candidate.id, candidate.revision))
+        })
+        .cloned()
+        .collect();
+    let mut merged: HashMap<(Uuid, i32), Candidate> = HashMap::new();
     for (lane, rows) in [keyword, semantic].into_iter().enumerate() {
         let mut seen = HashSet::new();
-        for (rank, mut candidate) in rows.into_iter().filter(|c| seen.insert(c.id)).enumerate() {
+        for (rank, mut candidate) in rows
+            .into_iter()
+            .filter(|c| seen.insert((c.id, c.revision)))
+            .enumerate()
+        {
             let increment = 1.0 / (61.0 + rank as f64);
-            if let Some(previous) = merged.get_mut(&candidate.id) {
-                if previous.indexed_revision.is_some()
-                    && candidate.indexed_revision.is_some()
-                    && previous.indexed_revision != candidate.indexed_revision
-                {
-                    // 两路在并发更正前后读取到不同修订，旧分数不能转贴到新正文。
-                    candidate.fusion_score = Some(increment);
-                    *previous = candidate;
-                    continue;
-                }
+            let key = (candidate.id, candidate.revision);
+            if let Some(previous) = merged.get_mut(&key) {
                 previous.fusion_score = Some(previous.fusion_score.unwrap_or(0.0) + increment);
                 if lane == 1 {
                     previous.semantic_score = candidate.semantic_score;
-                    previous.indexed_revision = candidate.indexed_revision;
                     previous.path = MatchPath::Hybrid;
                 }
             } else {
                 candidate.fusion_score = Some(increment);
-                merged.insert(candidate.id, candidate);
+                merged.insert(key, candidate);
             }
         }
     }
@@ -525,7 +553,9 @@ fn fuse(keyword: Vec<Candidate>, semantic: Vec<Candidate>) -> Vec<Candidate> {
             .partial_cmp(&a.fusion_score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| b.revision.cmp(&a.revision))
     });
+    rows.extend(fallback_proofs);
     rows
 }
 
@@ -542,7 +572,7 @@ mod tests {
             id,
             path: MatchPath::QdrantBm25,
             score: Some(score),
-            indexed_revision: Some(1),
+            revision: 1,
             semantic_score: None,
             fusion_score: None,
             keyword_match: None,
@@ -551,7 +581,7 @@ mod tests {
             id,
             path: MatchPath::QdrantVector,
             score: None,
-            indexed_revision: Some(1),
+            revision: 1,
             semantic_score: Some(score),
             fusion_score: None,
             keyword_match: None,
@@ -565,7 +595,7 @@ mod tests {
         assert_eq!(result[0].debug(Some(1)).semantic_score, Some(0.5));
         assert_eq!(result[0].debug(Some(2)).semantic_score, None);
         let mut updated = semantic(a, 0.9);
-        updated.indexed_revision = Some(2);
+        updated.revision = 2;
         let result = fuse(vec![keyword(a, 99.0)], vec![updated]);
         assert_eq!(
             result[0].debug(Some(2)).bm25_score,
@@ -576,12 +606,70 @@ mod tests {
     }
 
     #[test]
+    fn fusion_keeps_current_fallback_after_an_older_hit_of_the_same_id() {
+        let id = Uuid::now_v7();
+        let terms = vec!["蓝桉".into()];
+        let old = || Candidate {
+            id,
+            path: MatchPath::QdrantBm25,
+            score: Some(7.0),
+            revision: 1,
+            semantic_score: None,
+            fusion_score: None,
+            keyword_match: None,
+        };
+        let fallback = Candidate {
+            path: MatchPath::PendingKeyword,
+            score: None,
+            revision: 2,
+            ..old()
+        };
+        let vector = Candidate {
+            path: MatchPath::QdrantVector,
+            score: None,
+            semantic_score: Some(0.9),
+            ..old()
+        };
+        let current = json!({"revision":2,"content":"蓝桉本次修订"});
+        // 同版三条证据融合后又发生更正：可复核的兜底排在旧融合结果之后，
+        // 输出只携带当前正文，旧索引分数和 RRF 排名都不转移。
+        let fused_then_changed = fuse(
+            vec![
+                old(),
+                Candidate {
+                    revision: 1,
+                    ..fallback.clone()
+                },
+            ],
+            vec![vector.clone()],
+        );
+        assert!(!fused_then_changed[0].matches_card(&current, &terms));
+        let backup = fused_then_changed
+            .iter()
+            .find(|row| row.matches_card(&current, &terms))
+            .unwrap();
+        assert!(backup.local_keyword());
+        assert!(backup.debug(Some(2)).indexed_revision.is_none());
+        assert!(backup.debug(Some(2)).fusion_score.is_none());
+        assert!(!backup.matches_card(&json!({"revision":2,"content":"不再相关"}), &terms));
+
+        let rows = fuse(vec![old(), fallback], vec![vector]);
+        let mut usable = rows.iter().filter(|row| row.matches_card(&current, &terms));
+        let matched = usable.next().unwrap();
+        assert!(usable.next().is_none());
+        assert!(matches!(matched.path, MatchPath::PendingKeyword));
+        assert_eq!(matched.debug(Some(2)).indexed_revision, None);
+        assert!(!matched.matches_card(&json!({"revision":3,"content":"不再相关"}), &terms));
+        assert!(matched.matches_card(&json!({"revision":3,"content":"仍关联蓝桉"}), &terms));
+    }
+
+    #[test]
     fn a_score_never_moves_from_an_old_index_revision_to_new_content() {
         let candidate = Candidate {
             id: Uuid::now_v7(),
             path: MatchPath::QdrantBm25,
             score: Some(2.5),
-            indexed_revision: Some(1),
+            revision: 1,
             semantic_score: None,
             fusion_score: None,
             keyword_match: Some(KeywordMatch::FullCoverage { parts: 2 }),
@@ -597,7 +685,7 @@ mod tests {
             id: candidate.id,
             path: MatchPath::PendingKeyword,
             score: None,
-            indexed_revision: None,
+            revision: 2,
             semantic_score: None,
             fusion_score: None,
             keyword_match: None,

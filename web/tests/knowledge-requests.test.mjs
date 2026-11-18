@@ -59,3 +59,18 @@ test("整理详情与任务轮询独立，浏览器不再提交旧的人工确�
   assert.equal(b.text.at(-1)[0],"apply-revision");
   assert.equal(b.text.at(-1)[2],400);
 });
+
+test("七天提炼统计单独读取当前空间，与提炼任务轮询互不取消", async () => {
+  const b = bridge();
+  const stats = b.window.chromieTextModel("demo", "extraction-usage", "{}", 7);
+  const jobs = b.window.chromieTextModel("demo", "jobs", "{}", 8);
+  assert.equal(b.requests[0].path, "/spaces/demo/knowledge/extraction-usage");
+  assert.equal(b.requests[0].options.method, "GET");
+  assert.equal(b.requests[0].options.credentials, "same-origin");
+  assert.equal(b.requests[0].options.cache, "no-store");
+  assert.equal(b.requests[0].options.signal.aborted, false);
+  reply(b.requests[0], {generated: 0});
+  reply(b.requests[1], {jobs: []});
+  await Promise.all([stats, jobs]);
+  assert.deepEqual(b.text.map(call => call.slice(0, 3)), [["extraction-usage", 7, 200], ["jobs", 8, 200]]);
+});

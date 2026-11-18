@@ -6,6 +6,6 @@
 
 Agent 根据已知用途整理公开说明和格式契约，不猜字段或环境。收到录入回执后先 get_memory，必要时补全同一条公开说明；已经完整就结束，不再创建重复记忆。
 
-取用前读取公开 contract 和 revision。自动化优先 `chromie secret exec`，指定 ref、同一修订与公开 purpose，由子进程读取 CHROMIE_SECRET_FILE。根据契约使用文本或 JSON，不能为了了解格式而显示原文。修订冲突时重新读取元数据；未知格式按实时指南补契约。仅在脚本确保不输出凭据且任务确需业务结果时继承输出。
+要用已有凭据而尚无引用时，用 recall 查询服务、环境及用途；工具支持时传 `prefer_secret_refs: true`。已有确切引用可直接读取其元数据。取用前读取公开 contract 和 revision。自动化优先 `chromie secret exec`，指定 ref、同一修订与公开 purpose，由子进程读取 CHROMIE_SECRET_FILE。根据契约使用文本或 JSON，不能为了了解格式而显示原文。修订冲突时重新读取元数据；未知格式按实时指南补契约。仅在脚本确保不输出凭据且任务确需业务结果时继承输出。
 
 长期文件使用 `get --out`。本地临时文件由 CLI 或本次脚本妥善清理，用户要求保留的文件按其意图处理；不要 cat、截图或回显 Secret。执行真实业务仍服从用户在当前任务的授权。

@@ -516,6 +516,7 @@ async fn web_recall_reuses_domain_search_and_enforces_space_and_cookie_boundarie
             space,
             Recall {
                 query: "webrecall".into(),
+                prefer_secret_refs: false,
                 project_key: None,
                 max_chars: Some(8000),
             },

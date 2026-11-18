@@ -18,6 +18,10 @@ pub(crate) fn routes(prefix: &str) -> Router<Store> {
         .route(&format!("{prefix}/knowledge/memory"), post(memory))
         .route(&format!("{prefix}/knowledge/jobs"), get(jobs).post(enqueue))
         .route(&format!("{prefix}/knowledge/review"), post(review))
+        .route(
+            &format!("{prefix}/knowledge/extraction-usage"),
+            get(extraction_usage),
+        )
         .layer(DefaultBodyLimit::max(4096))
 }
 
@@ -33,6 +37,13 @@ async fn review(
 ) -> Result<Json<Value>> {
     let Json(input) = payload.map_err(|_| Error::invalid("提炼结果参数无效"))?;
     Ok(Json(store.knowledge_review(space, input.job_id).await?))
+}
+
+async fn extraction_usage(
+    State(store): State<Store>,
+    Extension(space): Extension<SpaceId>,
+) -> Result<Json<Value>> {
+    Ok(Json(store.extraction_usage(space).await?))
 }
 
 async fn jobs(

@@ -31,6 +31,7 @@ mod m20261112_120100_text_output_budget;
 
 mod m20261113_000001_conversation_extraction;
 mod m20261117_000001_usage_maintenance;
+mod m20261118_000001_recall_negative_reason;
 
 pub struct Migrator;
 
@@ -59,6 +60,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261112_120100_text_output_budget::Migration),
             Box::new(m20261113_000001_conversation_extraction::Migration),
             Box::new(m20261117_000001_usage_maintenance::Migration),
+            Box::new(m20261118_000001_recall_negative_reason::Migration),
         ]
     }
 }

@@ -18,6 +18,7 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     pub use_reason: Option<String>,
     pub used_at: Option<TimeDateTime>,
+    pub negative_reason: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

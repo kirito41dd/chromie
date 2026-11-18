@@ -16,6 +16,8 @@ component EmptyResults inherits Rectangle {
 }
 
 export component RecallColumns inherits Rectangle {
+    in property <bool> reader-open;
+    callback read-full(string, int);
     callback show-secret(string, string);
     min-width: 0px; max-width: 100000px; preferred-width: 1160px;
     horizontal-stretch: 1; vertical-stretch: 0;
@@ -30,7 +32,11 @@ export component RecallColumns inherits Rectangle {
             width: max(0px, root.width - (root.wide ? 344px : 0px));
             spacing: 16px; alignment: start;
             if root.results.length == 0: EmptyResults { initial: false; }
-            for memory in root.results: RecallResult { memory: memory; show-secret(id, label) => { root.show-secret(id, label); } }
+            for memory in root.results: RecallResult {
+                memory: memory; reader-open: root.reader-open;
+                read-full(id, revision) => { root.read-full(id, revision); }
+                show-secret(id, label) => { root.show-secret(id, label); }
+            }
             if !root.wide: RecallProcess { overview: root.overview; stages: root.stages; }
         }
         if root.wide: RecallProcess { width: 320px; overview: root.overview; stages: root.stages; }
@@ -38,6 +44,8 @@ export component RecallColumns inherits Rectangle {
 }
 
 export component RecallPage inherits Rectangle {
+    in property <bool> reader-open;
+    callback read-full(string, int);
     callback show-secret(string, string);
     min-width: 0px; max-width: 100000px; preferred-width: 1160px;
     horizontal-stretch: 1; vertical-stretch: 0;
@@ -98,7 +106,12 @@ export component RecallPage inherits Rectangle {
                 note := SelectableText { x: 16px; y: 14px; width: parent.width - 32px; height: self.preferred-height;
                     text: root.recall-note; text-color: root.overview.limited ? #8b601f : #5747bd; font-size: 12px; wrap: word-wrap; }
             }
-            RecallColumns { wide: root.wide; results: root.recall-results; overview: root.overview; stages: root.stages; show-secret(id, label) => { root.show-secret(id, label); } }
+            RecallColumns {
+                wide: root.wide; results: root.recall-results; overview: root.overview; stages: root.stages;
+                reader-open: root.reader-open;
+                read-full(id, revision) => { root.read-full(id, revision); }
+                show-secret(id, label) => { root.show-secret(id, label); }
+            }
         }
         if root.debug-request != "" || root.debug-response != "": VerticalLayout {
             spacing: 16px;

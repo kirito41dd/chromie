@@ -8,7 +8,7 @@
 mod generated {
     slint::slint! {
         #[style = "fluent-light"]
-        export { ExtractionJob, ExtractionDecision } from "../ui/extraction.slint";
+        export { ExtractionUsageView, ExtractionJob, ExtractionDecision } from "../ui/extraction.slint";
         export { ConversationRow, CapturedRow } from "../ui/messages.slint";
         export { TransferRow } from "../ui/transfer.slint";
         export { AgentRow } from "../ui/access.slint";
@@ -24,8 +24,8 @@ mod generated {
 
 pub use generated::{
     AgentRow, CapturedRow, ConversationRow, CopyBridge, Dashboard, ExtractionDecision,
-    ExtractionJob, KnowledgeRow, MemoryRow, PointerBridge, RecallOverview, RecallRow, RecallStage,
-    SecretLine, TransferRow, UsageDay, UsageTotal,
+    ExtractionJob, ExtractionUsageView, KnowledgeRow, MemoryRow, PointerBridge, RecallOverview,
+    RecallRow, RecallStage, SecretLine, TransferRow, UsageDay, UsageTotal,
 };
 #[cfg(target_arch = "wasm32")]
 mod knowledge_browser;
@@ -33,6 +33,8 @@ mod knowledge_browser;
 pub use knowledge_browser::receive_knowledge;
 #[cfg(target_arch = "wasm32")]
 mod extraction_browser;
+#[cfg(any(target_arch = "wasm32", test))]
+mod extraction_usage;
 #[cfg(target_arch = "wasm32")]
 mod text_browser;
 #[cfg(target_arch = "wasm32")]

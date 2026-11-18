@@ -299,14 +299,14 @@ window.chromieRequestId = () => {
 const activeTextModel = new Map();
 window.chromieCancelTextModel = () => { for (const controller of activeTextModel.values()) controller.abort(); activeTextModel.clear(); };
 window.chromieTextModel = async (space, operation, payload, generation) => {
-  if (typeof space !== "string" || !/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["read", "reload", "save", "test", "disable", "jobs", "queue", "review"].includes(operation)) { receive_text_model(operation, generation, 400, ""); return; }
-  const channel = ["jobs", "queue"].includes(operation) ? "jobs" : operation === "review" ? "review" : "config";
+  if (typeof space !== "string" || !/^[a-z]+(?:-[a-z]+)*$/.test(space) || !["read", "reload", "save", "test", "disable", "jobs", "queue", "review", "extraction-usage"].includes(operation)) { receive_text_model(operation, generation, 400, ""); return; }
+  const channel = ["jobs", "queue"].includes(operation) ? "jobs" : ["review", "extraction-usage"].includes(operation) ? operation : "config";
   activeTextModel.get(channel)?.abort(); const controller = new AbortController(); activeTextModel.set(channel, controller);
   const timeout = setTimeout(() => controller.abort(), 150000);
   try {
     const prefix = `/spaces/${encodeURIComponent(space)}`;
-    const path = channel === "review" ? `${prefix}/knowledge/${operation}` : channel === "jobs" ? `${prefix}/knowledge/jobs` : `${prefix}/system/text-model${["test", "disable"].includes(operation) ? "/" + operation : ""}`;
-    const read = ["read", "reload", "jobs"].includes(operation);
+    const path = ["review", "extraction-usage"].includes(channel) ? `${prefix}/knowledge/${operation}` : channel === "jobs" ? `${prefix}/knowledge/jobs` : `${prefix}/system/text-model${["test", "disable"].includes(operation) ? "/" + operation : ""}`;
+    const read = ["read", "reload", "jobs", "extraction-usage"].includes(operation);
     const response = await fetch(path, {method:read ? "GET" : "POST", credentials:"same-origin", mode:"same-origin", redirect:"error", cache:"no-store", signal:controller.signal, ...(read ? {} : {headers:{"Content-Type":"application/json"}, body:payload})});
     payload = "";
     const body = await response.text();

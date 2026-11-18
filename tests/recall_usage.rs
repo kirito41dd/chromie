@@ -2,7 +2,7 @@ mod support;
 
 use chromie::{
     agent::UpdateAgent,
-    entity::{recall_items, recall_runs},
+    entity::{maintenance_items, recall_items, recall_runs},
     recall_usage::MemoryOrder,
     search::Search,
     space_key::SpaceKey,
@@ -138,6 +138,109 @@ async fn stats(store: &Store, space: SpaceId, id: Uuid) -> Value {
         "聚合查询必须实际成功，不能静默丢失统计"
     );
     serde_json::to_value(row.usage.unwrap()).unwrap()
+}
+
+#[tokio::test]
+#[ignore = "需要真实隔离 MySQL 与 Qdrant"]
+async fn negative_reasons_supplement_once_and_conflicts_roll_back_the_batch() {
+    let (store, base, slug, space, token, _, task) = fixture().await;
+    let marker = format!("reason-{}", Uuid::now_v7());
+    let a = memory(&store, space, format!("{marker} 虚构项目一")).await;
+    let b = memory(&store, space, format!("{marker} 虚构项目二")).await;
+    let run = recall(&base, &slug, &token, &marker, 8000).await;
+    assert_eq!(run["memories"].as_array().unwrap().len(), 2);
+    let id = Uuid::parse_str(run["recall_id"].as_str().unwrap()).unwrap();
+    let row = |memory_id: Uuid| {
+        recall_items::Entity::find_by_id((
+            space.bytes_for_test(),
+            id.as_bytes().to_vec(),
+            memory_id.as_bytes().to_vec(),
+        ))
+        .one(&store.db)
+    };
+    let legacy = json!({"recalls":[evaluation(&run,&[a],&[])]});
+    let submit = |payload| rpc(&base, &slug, &token, "feedback_recall", payload);
+    let old = submit(legacy.clone()).await;
+    assert_eq!(old["structuredContent"]["recorded"], 1);
+    let before = row(a).await.unwrap().unwrap();
+    assert_eq!(before.negative_reason, None);
+    let payload = |ids: &[Uuid], reasons| {
+        let mut item = evaluation(&run, ids, &[]);
+        item["negative_reasons"] = reasons;
+        json!({"recalls":[item]})
+    };
+    let reason_a = json!({"memory_id":a,"reason":"scope_mismatch"});
+    let reason_b = json!({"memory_id":b,"reason":"missing_detail"});
+    let supplement = payload(&[a], json!([reason_a]));
+    let (_, other_token, _) = support::grant(&store, space, false).await;
+    let denied = rpc(
+        &base,
+        &slug,
+        &other_token,
+        "feedback_recall",
+        supplement.clone(),
+    )
+    .await;
+    assert_eq!(denied["structuredContent"]["code"], "not_found");
+    let (_, other_base, other_slug, _, foreign_token, _, foreign_task) = fixture().await;
+    let cross_space = rpc(
+        &other_base,
+        &other_slug,
+        &foreign_token,
+        "feedback_recall",
+        supplement.clone(),
+    )
+    .await;
+    assert_eq!(cross_space["structuredContent"]["code"], "not_found");
+    foreign_task.abort();
+    let (one, two) = tokio::join!(submit(supplement.clone()), submit(supplement.clone()));
+    for result in [&one, &two] {
+        assert_eq!(result["structuredContent"]["recorded"], 0);
+        assert_eq!(result["structuredContent"]["replayed"], 1);
+    }
+    assert_eq!(
+        one["structuredContent"]["negative_reasons_recorded"]
+            .as_u64()
+            .unwrap()
+            + two["structuredContent"]["negative_reasons_recorded"]
+                .as_u64()
+                .unwrap(),
+        1
+    );
+    let omitted = submit(legacy).await;
+    assert_eq!(omitted["structuredContent"]["negative_reasons_recorded"], 0);
+    let after = row(a).await.unwrap().unwrap();
+    assert_eq!(after.negative_reason.as_deref(), Some("scope_mismatch"));
+    assert_eq!(after.evaluated_at, before.evaluated_at);
+    assert_eq!(stats(&store, space, a).await["evaluated_count"], 1);
+    let conflict = submit(payload(
+        &[b, a],
+        json!([reason_b,{"memory_id":a,"reason":"wrong_result_type"}]),
+    ))
+    .await;
+    assert_eq!(
+        conflict["structuredContent"]["code"],
+        "recall_feedback_conflict"
+    );
+    let untouched = row(b).await.unwrap().unwrap();
+    assert_eq!((untouched.useful, untouched.negative_reason), (None, None));
+    let fresh = submit(payload(&[b], json!([reason_b]))).await;
+    assert_eq!(fresh["structuredContent"]["recorded"], 1);
+    assert_eq!(fresh["structuredContent"]["negative_reasons_recorded"], 1);
+    assert_eq!(
+        row(b).await.unwrap().unwrap().negative_reason.as_deref(),
+        Some("missing_detail")
+    );
+    for id in [a, b] {
+        assert!(
+            maintenance_items::Entity::find_by_id((space.bytes_for_test(), id.as_bytes().to_vec()))
+                .one(&store.db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    task.abort();
 }
 
 #[tokio::test]
@@ -442,6 +545,7 @@ async fn budget_filtering_and_unreturned_or_foreign_ids_do_not_create_false_coun
         "not_found"
     );
     let foreign_insert = recall_items::ActiveModel {
+        negative_reason: Set(None),
         use_outcome: Set(None),
         use_reason: Set(None),
         used_at: Set(None),
@@ -662,6 +766,7 @@ async fn version_twenty_upgrade_preserves_memories_credentials_and_secret_cipher
     .unwrap();
     let request = || Recall {
         query: "usage-upgrade-marker".into(),
+        prefer_secret_refs: false,
         project_key: None,
         max_chars: Some(8000),
     };
@@ -672,6 +777,31 @@ async fn version_twenty_upgrade_preserves_memories_credentials_and_secret_cipher
         2,
         "统计表缺失也不能阻断召回"
     );
+    migration::Migrator::up(&store.db, Some(1)).await.unwrap();
+    let old_run = Uuid::now_v7().as_bytes().to_vec();
+    recall_runs::Entity::insert(recall_runs::ActiveModel {
+        space_id: Set(space.bytes_for_test()),
+        id: Set(old_run.clone()),
+        agent_id: Set(Some(agent.as_bytes().to_vec())),
+        channel: Set("agent".into()),
+        created_at: Set(current),
+    })
+    .exec_without_returning(&store.db)
+    .await
+    .unwrap();
+    // 21 版没有 negative_reason。只 INSERT 旧字段，避免让新版 Entity 回读新列。
+    recall_items::Entity::insert(recall_items::ActiveModel {
+        space_id: Set(space.bytes_for_test()),
+        recall_id: Set(old_run.clone()),
+        memory_id: Set(note.as_bytes().to_vec()),
+        revision: Set(1),
+        useful: Set(Some(0)),
+        evaluated_at: Set(Some(current)),
+        ..Default::default()
+    })
+    .exec_without_returning(&store.db)
+    .await
+    .unwrap();
     migration::Migrator::up(&store.db, None).await.unwrap();
     migration::Migrator::up(&store.db, None).await.unwrap();
     assert_eq!(
@@ -679,7 +809,24 @@ async fn version_twenty_upgrade_preserves_memories_credentials_and_secret_cipher
             .await
             .unwrap()
             .len(),
-        21
+        migration::Migrator::migrations().len()
+    );
+    let old_feedback = recall_items::Entity::find_by_id((
+        space.bytes_for_test(),
+        old_run,
+        note.as_bytes().to_vec(),
+    ))
+    .one(&store.db)
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        (
+            old_feedback.revision,
+            old_feedback.useful,
+            old_feedback.negative_reason
+        ),
+        (1, Some(0), None)
     );
     store.initialize_model_admin(None).await.unwrap();
     assert_eq!(

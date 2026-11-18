@@ -53,7 +53,16 @@ impl Store {
             Self::count_automatic_attempt(&tx).await?;
         }
         let lease = Uuid::now_v7();
+        let mut progress = row.result.clone().unwrap_or_else(|| json!({}));
+        progress["phase_attempts"] = json!(
+            progress["phase_attempts"]
+                .as_u64()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(Error::unavailable)?
+        );
         let mut active = row.into_active_model();
+        active.result = Set(Some(progress));
         active.state = Set("running".into());
         active.lease_owner = Set(Some(lease.as_bytes().to_vec()));
         active.lease_expires_at = Set(Some(current + time::Duration::seconds(180)));
@@ -472,6 +481,9 @@ impl Store {
             }
         }
         for item in &snapshot.events {
+            if Self::auxiliary_source(db, space, item.event_id).await? {
+                return Err(Error::conflict("knowledge_input_changed"));
+            }
             let current = source_events::Entity::find_by_id((
                 space.bytes(),
                 item.event_id.as_bytes().to_vec(),
@@ -511,15 +523,30 @@ impl Store {
                 | "organization_settings_changed"
                 | "knowledge_lease_changed"
         );
-        let retry = matches!(
+        // 确定性输入过大仍缩批／阻断；模型偶发截断或格式错误先在同一固定快照内
+        // 最多尝试两次，沿用预算、并发与发布复核，不生成无限重试的新任务。
+        let phase_attempts = current
+            .result
+            .as_ref()
+            .and_then(|r| r["phase_attempts"].as_u64())
+            .unwrap_or(1);
+        let output_retry = matches!(
             error.code,
-            "model_unreachable"
-                | "model_server_error"
-                | "model_rate_limited"
-                | "model_busy"
-                | "storage_error"
-                | "unavailable"
-        ) && current.attempts < 4;
+            "model_output_truncated"
+                | "model_output_json"
+                | "model_output_schema"
+                | "model_response"
+        ) && phase_attempts < 2;
+        let retry = output_retry
+            || matches!(
+                error.code,
+                "model_unreachable"
+                    | "model_server_error"
+                    | "model_rate_limited"
+                    | "model_busy"
+                    | "storage_error"
+                    | "unavailable"
+            ) && current.attempts < 4;
         let delay = [10, 30, 120, 300]
             .get(current.attempts.saturating_sub(1) as usize)
             .copied()
@@ -552,7 +579,7 @@ impl Store {
             "phase":if current.kind == "organize" {"organize"}else if current.kind=="maintain"{"maintain"} else if current.payload.as_ref().is_some_and(|p| !p["review"].is_null()) {"review"} else {"extract"},
             "snapshot_bytes":current.payload.as_ref().map(|p|p.to_string().len()),
             "work_items":Self::knowledge_work_items(&current),
-            "code":error.code,"attempts":current.attempts,"automatic_retry":retry
+            "code":error.code,"attempts":current.attempts,"phase_attempts":phase_attempts,"automatic_retry":retry,"output_retry_limit":2
         });
         let mut active = current.into_active_model();
         active.result = Set(Some(result));

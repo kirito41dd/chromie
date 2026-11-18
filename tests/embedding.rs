@@ -142,6 +142,7 @@ async fn query(store: &Store, space: SpaceId, text: &str) -> Value {
             space,
             Recall {
                 query: text.into(),
+                prefer_secret_refs: false,
                 project_key: None,
                 max_chars: Some(8000),
             },

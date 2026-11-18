@@ -1,5 +1,9 @@
 #[path = "knowledge_jobs/autonomous.rs"]
 mod autonomous_tests;
+#[path = "knowledge_jobs/extraction_batch.rs"]
+mod extraction_batch_tests;
+#[path = "knowledge_jobs/recovery.rs"]
+mod recovery_tests;
 mod support;
 use axum::{
     Json, Router,
@@ -158,7 +162,7 @@ async fn complete(
             json!({"memory_id":note["id"],"relation":"derived_from","revision":note["revision"]});
         content = json!({"notes":[{"memory_id":topic["id"],"expected_revision":topic["revision"],"content":"虚构满容量主题\n保留全部原入口。","memory_type":"topic","links":if mode==25 {vec![link;35]}else{vec![link]}}],"conflicts":[]});
     }
-    if input["kind"] != "probe" && mode == 19 {
+    if input["kind"] != "probe" && (mode == 19 || mode == 29 && input["kind"] == "review") {
         return Json(json!({"choices":[{"finish_reason":"length","message":{"content":"不得保存的输出片段"}}]})).into_response();
     }
     if input["kind"] == "extract" && matches!(mode, 27 | 28) {
@@ -444,6 +448,12 @@ async fn model_settings_encrypt_keys_and_jobs_publish_cited_topics_and_source_li
         .unwrap();
     finish_stage(&f).await;
     assert_eq!(job(&f, id).await.state, "done");
+    let usage = f.store.extraction_usage(f.space).await.unwrap();
+    assert_eq!(
+        usage["generated"], 1,
+        "实际提炼新增普通记忆，之前整理出的主题不计入"
+    );
+    assert_eq!(usage["not_recalled"], 1);
     // 提炼即使返回合法枚举，也不能绕过领域约定创建主题。
     let wrong_type = Uuid::now_v7();
     f.model.mode.store(4, Ordering::SeqCst);
@@ -459,6 +469,9 @@ async fn model_settings_encrypt_keys_and_jobs_publish_cited_topics_and_source_li
         )
         .await
         .unwrap();
+    f.store.sync_knowledge_due().await.unwrap();
+    assert_eq!(job(&f, wrong_type).await.state, "retry");
+    recovery_tests::make_job_due(&f, wrong_type).await;
     f.store.sync_knowledge_due().await.unwrap();
     let rejected = job(&f, wrong_type).await;
     assert_eq!(rejected.state, "failed");
@@ -2412,6 +2425,9 @@ async fn truncated_output_has_safe_stage_diagnostics() {
     f.model.mode.store(19, Ordering::SeqCst);
     let id = queue(&f, note).await;
     finish_stage(&f).await;
+    assert_eq!(job(&f, id).await.state, "retry");
+    recovery_tests::make_job_due(&f, id).await;
+    f.store.sync_knowledge_due().await.unwrap();
     let result = job(&f, id).await;
     assert_eq!(result.last_error.as_deref(), Some("model_output_truncated"));
     let diagnostic = &result.result.as_ref().unwrap()["diagnostic"];
@@ -2518,6 +2534,17 @@ async fn structural_failure_reduces_batches_and_stops_at_single_item() {
             break;
         }
         f.store.sync_knowledge_due().await.unwrap();
+        // 每个固定快照先有限重试，耗尽后才缩小下一批；不把一次截断当作必然失败。
+        let retry = knowledge_jobs::Entity::find()
+            .filter(knowledge_jobs::Column::SpaceId.eq(f.space.bytes()))
+            .filter(knowledge_jobs::Column::State.eq("retry"))
+            .all(&f.store.db)
+            .await
+            .unwrap();
+        for row in retry {
+            recovery_tests::make_job_due(&f, Uuid::from_slice(&row.id).unwrap()).await;
+            f.store.sync_knowledge_due().await.unwrap();
+        }
         sizes.push(
             f.model.requests.lock().unwrap().last().unwrap().2["memories"]
                 .as_array()
@@ -2610,6 +2637,7 @@ async fn report_problem(f: &Fixture, id: Uuid) -> Uuid {
             .unwrap()
             .unwrap();
     chromie::entity::recall_items::ActiveModel {
+        negative_reason: Set(None),
         space_id: Set(f.space.bytes()),
         recall_id: Set(recall.as_bytes().to_vec()),
         memory_id: Set(id.as_bytes().to_vec()),
@@ -2812,6 +2840,7 @@ async fn maintenance_prioritizes_revision_requests_and_keeps_problem_evidence_am
     .await
     .unwrap();
     chromie::entity::recall_items::ActiveModel {
+        negative_reason: Set(None),
         space_id: Set(f.space.bytes()),
         recall_id: Set(recall.as_bytes().to_vec()),
         memory_id: Set(target.as_bytes().to_vec()),
@@ -2866,6 +2895,7 @@ async fn maintenance_prioritizes_revision_requests_and_keeps_problem_evidence_am
         .await
         .unwrap();
         chromie::entity::recall_items::ActiveModel {
+            negative_reason: Set(None),
             space_id: Set(f.space.bytes()),
             recall_id: Set(id.as_bytes().to_vec()),
             memory_id: Set(target.as_bytes().to_vec()),

@@ -784,3 +784,120 @@ async fn curl_helper_writes_private_files_without_printing_plaintext_and_preserv
     task.abort();
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+#[ignore = "需要真实隔离 MySQL 与 Qdrant"]
+async fn credential_lookup_prioritizes_matching_stored_refs_before_limits() {
+    let (store, work, life, root) = fixture().await;
+    let space = store.resolve_space(&work).await.unwrap();
+    let (base, server) = server(store.clone(), &root).await;
+    let (_, token, _) = support::grant(&store, space, false).await;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
+    let mcp = format!("{base}/spaces/{}/mcp", work.as_str());
+    let query = "fictional-archive";
+    let mut notes = Vec::new();
+    for i in 0..10 {
+        let note = serde_json::from_value(json!({
+            "content": format!("{query} 原始记录查询方法 {i}"), "request_id": Uuid::now_v7()
+        }))
+        .unwrap();
+        notes.push(store.remember(space, note).await.unwrap()["memory_id"].clone());
+    }
+    let mut wanted = Vec::new();
+    for (target, project, label) in [
+        (space, "archive", "fictional-archive 主库连接"),
+        (space, "archive", "fictional-archive 副本连接"),
+        (space, "other", "fictional-archive 其他项目"),
+        (space, "archive", "unrelated-billing 独立系统"),
+        (
+            store.resolve_space(&life).await.unwrap(),
+            "archive",
+            "fictional-archive 其他空间",
+        ),
+    ] {
+        let saved = store
+            .create_secret(
+                target,
+                SecretCreate {
+                    label: label.into(),
+                    request_id: Uuid::now_v7(),
+                    project_key: Some(project.into()),
+                    contract: None,
+                },
+                FIRST,
+            )
+            .await
+            .unwrap();
+        if label.ends_with("连接") {
+            wanted.push(saved["memory_id"].clone());
+        }
+    }
+    // 这些新写入项都在待同步队列里，原始召回顺序固定，两个引用均在前十之外。
+    let args = json!({"query":query,"project_key":"archive","max_chars":8000});
+    let ordinary = tool(&client, &mcp, "recall", args.clone()).await;
+    let ids = |result: &Value| {
+        result["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["memory_id"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&ordinary), notes);
+    let mut prefer = args.clone();
+    prefer["prefer_secret_refs"] = json!(true);
+    let preferred = tool(&client, &mcp, "recall", prefer.clone()).await;
+    let expected: Vec<_> = wanted.iter().chain(&notes[..8]).cloned().collect();
+    assert_eq!(ids(&preferred), expected);
+    assert!(preferred["memories"][0]["secret_ref"].is_string());
+    assert!(!preferred.to_string().contains("fictional_secret_body"));
+    prefer["max_chars"] = json!(1024);
+    let small = tool(&client, &mcp, "recall", prefer.clone()).await;
+    assert_eq!(small["memories"][0]["memory_id"], wanted[0]);
+    let small_run = Uuid::parse_str(small["recall_id"].as_str().unwrap()).unwrap();
+    let recorded = entity::recall_items::Entity::find()
+        .filter(entity::recall_items::Column::SpaceId.eq(space.bytes()))
+        .filter(entity::recall_items::Column::RecallId.eq(small_run.as_bytes().to_vec()))
+        .all(&store.db)
+        .await
+        .unwrap();
+    let mut recorded_ids: Vec<_> = recorded
+        .iter()
+        .map(|row| Uuid::from_slice(&row.memory_id).unwrap().to_string())
+        .collect();
+    recorded_ids.sort();
+    let mut returned_ids: Vec<_> = ids(&small)
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    returned_ids.sort();
+    assert_eq!(recorded_ids, returned_ids);
+    prefer["query"] = json!("未收录的虚构对象");
+    assert!(ids(&tool(&client, &mcp, "recall", prefer).await).is_empty());
+    let mut normal = args;
+    normal["prefer_secret_refs"] = json!(false);
+    assert_eq!(
+        ids(&tool(&client, &mcp, "recall", normal.clone()).await),
+        notes
+    );
+    normal["prefer_secret_refs"] = json!(true);
+    normal["query"] = json!("查询方法");
+    assert_eq!(
+        ids(&tool(&client, &mcp, "recall", normal.clone()).await),
+        notes
+    );
+    assert_eq!(store.sync_due().await.unwrap(), 15);
+    normal["query"] = json!(query);
+    let indexed = tool(&client, &mcp, "recall", normal).await;
+    assert_eq!(indexed["index_available"], true);
+    let indexed_ids = ids(&indexed);
+    assert_eq!(indexed_ids.len(), 10);
+    assert!(wanted.iter().all(|id| indexed_ids[..2].contains(id)));
+    assert!(indexed_ids[2..].iter().all(|id| notes.contains(id)));
+    server.abort();
+}

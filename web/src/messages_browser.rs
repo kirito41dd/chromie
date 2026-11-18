@@ -303,10 +303,17 @@ fn populate(operation: &str, body: &str, ui: &Dashboard, state: &RefCell<State>)
                         .join(" ")
                         .into(),
                     meta: format!(
-                        "{} · {} 条 · 已提炼 {} 条 · {}",
+                        "{} · {} 条 · {} · {}",
                         c.origin.agent_name,
                         c.message_count,
-                        c.extraction["completed"].as_u64().unwrap_or(0),
+                        if c.extraction["state"] == "auxiliary" {
+                            "应用辅助会话 · 不提炼".into()
+                        } else {
+                            format!(
+                                "已提炼 {} 条",
+                                c.extraction["completed"].as_u64().unwrap_or(0)
+                            )
+                        },
                         crate::browser::date(&c.received_at)
                     )
                     .into(),
@@ -397,10 +404,17 @@ fn apply_title(info: &Value, ui: &Dashboard, state: &RefCell<State>) {
         .unwrap_or_default();
     ui.set_messages_thread_info(
         format!(
-            "{}\n已提炼 {} / {} 条 · {}",
+            "{}\n{} · {}",
             key,
-            info["extraction"]["completed"].as_u64().unwrap_or(0),
-            info["extraction"]["total"].as_u64().unwrap_or(0),
+            if info["extraction"]["state"] == "auxiliary" {
+                "应用辅助会话：保留原文，不参与记忆提炼".into()
+            } else {
+                format!(
+                    "已提炼 {} / {} 条",
+                    info["extraction"]["completed"].as_u64().unwrap_or(0),
+                    info["extraction"]["total"].as_u64().unwrap_or(0)
+                )
+            },
             if info["locked"] == true {
                 "标题已固定"
             } else {

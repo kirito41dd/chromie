@@ -93,6 +93,7 @@ fn get(id: Uuid, view: View) -> GetMemory {
 fn recall(query: &str) -> Recall {
     Recall {
         query: query.into(),
+        prefer_secret_refs: false,
         project_key: None,
         max_chars: None,
     }

@@ -65,6 +65,35 @@ pub struct MemoryUse {
     pub reason: Option<String>,
 }
 
+/// 表示本次任务与已返回内容的关系，仅用于汇总召回质量。
+#[derive(Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NegativeReason {
+    /// 对象、项目或环境与任务不符。
+    ScopeMismatch,
+    /// 需要的结果类型不同，例如需要凭据引用却只找到普通说明。
+    WrongResultType,
+    /// 对象相关但缺少回答本次问题的细节。
+    MissingDetail,
+}
+
+impl NegativeReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ScopeMismatch => "scope_mismatch",
+            Self::WrongResultType => "wrong_result_type",
+            Self::MissingDetail => "missing_detail",
+        }
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NegativeFeedback {
+    pub memory_id: Uuid,
+    pub reason: NegativeReason,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecallEvaluation {
@@ -77,6 +106,10 @@ pub struct RecallEvaluation {
     #[schemars(length(max = 10))]
     #[serde(default)]
     pub useful_memory_ids: Vec<Uuid>,
+    /// 可选。仅对本次已评价且无用的条目给出一个原因；不确定时省略。
+    #[serde(default)]
+    #[schemars(length(max = 10))]
+    pub negative_reasons: Vec<NegativeFeedback>,
     /// 只报告确实使用的条目，与“有用”判断独立；任务结束时报告最终观察。
     #[serde(default)]
     #[schemars(length(max = 10))]
@@ -109,6 +142,18 @@ impl FeedbackRecall {
             {
                 return Err(Error::invalid(
                     "评价 ID 必须唯一，每次最多 10 条，有用条目须属于已评价条目",
+                ));
+            }
+            let mut explained = HashSet::new();
+            if item.negative_reasons.len() > 10
+                || item.negative_reasons.iter().any(|entry| {
+                    !evaluated.contains(&entry.memory_id)
+                        || useful.contains(&entry.memory_id)
+                        || !explained.insert(entry.memory_id)
+                })
+            {
+                return Err(Error::invalid(
+                    "无用原因仅可填写本次已评价且无用的条目，每条一个原因，最多 10 条",
                 ));
             }
             let mut used = HashSet::new();
@@ -155,6 +200,52 @@ mod tests {
         assert!(request(json!(excessive), json!([])).validate().is_err());
         assert!(
             serde_json::from_value::<FeedbackRecall>(json!({"recalls":[],"agent_id":id})).is_err()
+        );
+    }
+    #[test]
+    fn reasons_only_explain_explicit_negative_evaluations() {
+        let id = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let run = Uuid::now_v7();
+        let request = |evaluated, useful, reasons| {
+            serde_json::from_value::<FeedbackRecall>(json!({
+                "recalls":[{"recall_id":run,"evaluated_memory_ids":evaluated,"useful_memory_ids":useful,"negative_reasons":reasons}]
+            }))
+        };
+        for reason in ["scope_mismatch", "wrong_result_type", "missing_detail"] {
+            let entry = json!({"memory_id":id,"reason":reason});
+            assert!(
+                request(json!([id]), json!([]), json!([entry]))
+                    .unwrap()
+                    .validate()
+                    .is_ok()
+            );
+            assert!(
+                request(json!([other]), json!([]), json!([entry]))
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+            assert!(
+                request(json!([id]), json!([id]), json!([entry]))
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+            assert!(
+                request(json!([id]), json!([]), json!([entry, entry]))
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        assert!(
+            request(
+                json!([id]),
+                json!([]),
+                json!([{"memory_id":id,"reason":"free text"}])
+            )
+            .is_err()
         );
     }
 }
