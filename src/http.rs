@@ -38,7 +38,7 @@ async fn authenticate(
     crate::web_auth::check_origin(request.headers(), guard.origin.as_deref())?;
     let path = request.uri().path();
     let secret_request = path.split('/').nth(3) == Some("secrets");
-    let kind = if path.ends_with("/mcp") {
+    let kind = if path.ends_with("/mcp") || path.split('/').nth(3) == Some("skills") {
         Some(KeyKind::Mcp)
     } else if path.ends_with("/events") {
         Some(KeyKind::Hook)
@@ -306,6 +306,7 @@ async fn build_router(
         .route("/spaces/{space}/recall", get(crate::web::page))
         .route("/spaces/{space}/access", get(crate::web::page))
         .route("/spaces/{space}/messages", get(crate::web::page))
+        .route("/spaces/{space}/skills", get(crate::web::page))
         .route("/spaces/{space}/transfer", get(crate::web::page))
         .route("/install.sh", get(crate::web::installer))
         .route(
@@ -355,6 +356,7 @@ async fn build_router(
         router = router.route(&format!("{prefix}/recall"), get(crate::web::page));
         router = router.route(&format!("{prefix}/settings"), get(crate::web::page));
         let mut routes = Router::new()
+            .merge(crate::skill_http::routes(&prefix))
             .route(
                 &format!("{prefix}/secrets/access-audit/{{audit}}/result"),
                 post(secret_execution_report).layer(DefaultBodyLimit::max(1024)),

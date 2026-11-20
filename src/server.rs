@@ -47,6 +47,18 @@ pub async fn serve(
     let vector_store = store.clone();
     let knowledge_store = store.clone();
     let retention_store = store.clone();
+    let skill_store = store.clone();
+    let skill_worker = tokio::spawn(async move {
+        let mut timer = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            timer.tick().await;
+            if crate::skill_objects::BucketStore::configured()
+                && let Err(e) = skill_store.compact_skills().await
+            {
+                tracing::warn!(code = e.code, "Skill 历史与对象清理将稍后重试");
+            }
+        }
+    });
     let retention_worker = tokio::spawn(async move {
         let mut timer = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -90,6 +102,8 @@ pub async fn serve(
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
         .await;
+    skill_worker.abort();
+    let _ = skill_worker.await;
     worker.abort();
     vector_worker.abort();
     knowledge_worker.abort();

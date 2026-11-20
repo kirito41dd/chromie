@@ -700,7 +700,10 @@ async fn http_auth_and_mcp() {
     let initialized = mcp(&client, &url, &mcp_key, "initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"chromie-test","version":"0"}})).await;
     assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
     let tools = mcp(&client, &url, &mcp_key, "tools/list", json!({})).await;
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 10);
+    let available = tools["result"]["tools"].as_array().unwrap();
+    for name in ["list_skills", "read_skill", "report_skill_use"] {
+        assert!(available.iter().any(|tool| tool["name"] == name));
+    }
     let guide = mcp(
         &client,
         &url,
@@ -772,7 +775,7 @@ async fn http_auth_and_mcp() {
         401
     );
     let changed = mcp(&client, &url, &mcp_key, "tools/list", json!({})).await;
-    assert_eq!(changed["result"]["tools"].as_array().unwrap().len(), 10);
+    assert_eq!(changed["result"]["tools"], tools["result"]["tools"]);
     let model = entity::spaces::Entity::find_by_id(work.bytes())
         .one(&store.db)
         .await

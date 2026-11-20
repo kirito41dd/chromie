@@ -59,6 +59,8 @@ export component AppHeader inherits Rectangle {
     in property <bool> access-page;
     in property <bool> messages-page;
     in property <bool> settings-page;
+    in property <bool> skills-page;
+    callback show-skills;
     in property <bool> transfer-page;
     callback show-transfer;
     in property <bool> can-manage;
@@ -74,7 +76,7 @@ export component AppHeader inherits Rectangle {
     callback show-settings;
     callback lock;
     callback focus-current;
-    focus-current => { if root.messages-page { messages-nav.focus(); } else if root.access-page { access-nav.focus(); } else if root.recall-page { recall-nav.focus(); } else { dashboard-nav.focus(); } }
+    focus-current => { if root.skills-page { skills-nav.focus(); } else if root.messages-page { messages-nav.focus(); } else if root.access-page { access-nav.focus(); } else if root.recall-page { recall-nav.focus(); } else { dashboard-nav.focus(); } }
     out property <length> navigation-right: navigation.x + navigation.width;
     out property <length> exit-left: exit.x;
     height: 56px; background: Theme.paper;
@@ -91,16 +93,23 @@ export component AppHeader inherits Rectangle {
             if root.show-brand: Text { text: "Chromie"; color: Theme.ink; font-size: 17px; font-weight: 700; vertical-alignment: center; }
         }
         navigation := Rectangle {
-            visible: root.unlocked;
-            width: root.unlocked ? tabs.preferred-width : 0px; height: 44px;
-            tabs := HorizontalLayout {
-                spacing: 4px; cross-axis-alignment: center;
-                dashboard-nav := HeaderTab { label: "看板"; compact: root.compact; dense: root.dense; selected: !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page; activated => { root.show-dashboard(); } }
-                access-nav := HeaderTab { label: "接入"; compact: root.compact; dense: root.dense; selected: root.access-page; activated => { root.show-access(); } }
-                messages-nav := HeaderTab { label: root.compact ? "消息" : "采集消息"; compact: root.compact; dense: root.dense; selected: root.messages-page; activated => { root.show-messages(); } }
-                recall-nav := HeaderTab { label: root.compact ? "召回" : "召回调试"; compact: root.compact; dense: root.dense; selected: root.recall-page; activated => { root.show-recall(); } }
-                HeaderTab { label: root.compact ? "迁移" : "炼化／夺舍"; compact: root.compact; dense: root.dense; selected: root.transfer-page; activated => { root.show-transfer(); } }
-                if root.can-manage: HeaderTab { label: root.compact ? "设置" : "系统设置"; compact: root.compact; dense: root.dense; selected: root.settings-page; activated => { root.show-settings(); } }
+            clip: true; visible: root.unlocked;
+            min-width: 0px; preferred-width: root.unlocked ? tabs.preferred-width : 0px; max-width: self.preferred-width;
+            height: 44px;
+            Flickable {
+                content-width: max(self.width, tabs.preferred-width); content-height: self.height;
+                interactive: self.width < tabs.preferred-width;
+                tabs := HorizontalLayout {
+                    width: self.preferred-width; height: 44px;
+                    spacing: 4px; cross-axis-alignment: center;
+                    dashboard-nav := HeaderTab { label: "看板"; compact: root.compact; dense: root.dense; selected: !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page && !root.skills-page; activated => { root.show-dashboard(); } }
+                    skills-nav := HeaderTab { label: root.compact ? "Skill" : "Skill 库"; compact: root.compact; dense: root.dense; selected: root.skills-page; activated => { root.show-skills(); } }
+                    access-nav := HeaderTab { label: "接入"; compact: root.compact; dense: root.dense; selected: root.access-page; activated => { root.show-access(); } }
+                    messages-nav := HeaderTab { label: root.compact ? "消息" : "采集消息"; compact: root.compact; dense: root.dense; selected: root.messages-page; activated => { root.show-messages(); } }
+                    recall-nav := HeaderTab { label: root.compact ? "召回" : "召回调试"; compact: root.compact; dense: root.dense; selected: root.recall-page; activated => { root.show-recall(); } }
+                    HeaderTab { label: root.compact ? "迁移" : "炼化／夺舍"; compact: root.compact; dense: root.dense; selected: root.transfer-page; activated => { root.show-transfer(); } }
+                    if root.can-manage: HeaderTab { label: root.compact ? "设置" : "系统设置"; compact: root.compact; dense: root.dense; selected: root.settings-page; activated => { root.show-settings(); } }
+                }
             }
         }
         Rectangle { horizontal-stretch: 1; }

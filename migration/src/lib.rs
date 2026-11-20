@@ -33,6 +33,8 @@ mod m20261113_000001_conversation_extraction;
 mod m20261117_000001_usage_maintenance;
 mod m20261118_000001_recall_negative_reason;
 
+mod m20261119_000001_cloud_skills;
+
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -61,6 +63,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261113_000001_conversation_extraction::Migration),
             Box::new(m20261117_000001_usage_maintenance::Migration),
             Box::new(m20261118_000001_recall_negative_reason::Migration),
+            Box::new(m20261119_000001_cloud_skills::Migration),
         ]
     }
 }

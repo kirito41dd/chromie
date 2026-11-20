@@ -21,6 +21,8 @@ mod client_config;
 #[cfg(feature = "client")]
 pub mod client_skills;
 #[cfg(feature = "client")]
+pub mod cloud_skill_cli;
+#[cfg(feature = "client")]
 pub mod codex_check;
 #[cfg(feature = "client")]
 pub mod codex_setup;
@@ -81,6 +83,13 @@ pub mod server_key;
 #[cfg(feature = "server")]
 pub mod setup_guides;
 pub mod shell_commands;
+#[cfg(feature = "server")]
+mod skill_http;
+#[cfg(feature = "server")]
+mod skill_mcp;
+#[cfg(feature = "server")]
+mod skill_objects;
+pub mod skill_package;
 pub mod space_key;
 #[cfg(feature = "server")]
 pub mod store;

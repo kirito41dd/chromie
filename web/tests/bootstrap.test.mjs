@@ -52,6 +52,7 @@ async function boot({ failure = handoff, transport, pathname = "/spaces/work-not
   const accessResponses = [];
   const accessNotices = [];
   const messageResponses = [];
+  const skillResponses = [];
   const clipboard = [];
   const secretCopyNotices = [];
   let selectedText = "";
@@ -104,12 +105,10 @@ async function boot({ failure = handoff, transport, pathname = "/spaces/work-not
     document: pageDocument,
     performance: { now: time.now },
     init: async () => initialized.push({ ...viewport.style }),
-    start: (space, recall) => { started.push(space); initialPages.push(recall); window.chromieReady(); if (failure) throw new Error(failure); },
-    set_page: recall => pages.push(recall),
-    set_access_page: access => pages.push(access ? "access" : false),
-    set_messages_page: messages => pages.push(messages ? "messages" : false),
-    set_settings_page: settings => pages.push(settings ? "settings" : false),
+    start: (space, page) => { started.push(space); initialPages.push(page); window.chromieReady(); if (failure) throw new Error(failure); },
+    set_page: page => pages.push(page),
     receive_model: (...values) => modelResponses.push(values),
+    receive_skills: (...values) => skillResponses.push(values),
     receive_messages: (...values) => messageResponses.push(values),
     receive_access: (...values) => accessResponses.push(values),
     receive_access_notice: (...values) => accessNotices.push(values),
@@ -133,7 +132,7 @@ async function boot({ failure = handoff, transport, pathname = "/spaces/work-not
     },
   });
   await vm.runInContext(`(async () => { ${source}\n})()`, context);
-  return { setSelection: text => { selectedText = text; }, navigator: browserNavigator, modelResponses, secretCopyNotices, accessNotices, messageResponses, accessResumes: () => accessResumes, downloads, accessResponses, clipboard, secretVerifications, secretResponses, secretHides: () => secretHides, window, viewport, canvas, documentCapture, initialized, loading, message, events, responses, recallResponses, requests, sizes, time, started, initialPages, pages, navigation, address, pageDocument, storage, ended: () => ended, reloads: () => reloads };
+  return { skillResponses, setSelection: text => { selectedText = text; }, navigator: browserNavigator, modelResponses, secretCopyNotices, accessNotices, messageResponses, accessResumes: () => accessResumes, downloads, accessResponses, clipboard, secretVerifications, secretResponses, secretHides: () => secretHides, window, viewport, canvas, documentCapture, initialized, loading, message, events, responses, recallResponses, requests, sizes, time, started, initialPages, pages, navigation, address, pageDocument, storage, ended: () => ended, reloads: () => reloads };
 }
 
 test("系统设置路由和模型配置只经同源 Cookie 接口，Key 不写入本地存储", async () => {
@@ -147,7 +146,7 @@ test("系统设置路由和模型配置只经同源 Cookie 接口，Key 不写�
   assert.equal(app.requests[0].options.cache, "no-store");
   assert.equal(app.requests[0].options.body, payload);
   assert.equal([...app.storage.values()].some(value => String(value).includes("fictional-only-model-key")), false);
-  app.window.chromieNavigate("work-notes", false, false, false, false, true);
+  app.window.chromieNavigate("work-notes", "settings", false);
   assert.equal(app.address.pathname, "/spaces/work-notes/settings");
   app.events.get("popstate")();
   assert.equal(app.pages.at(-1), "settings");
@@ -481,19 +480,19 @@ test("召回超时和鉴权失败都有独立状态返回", async () => {
 
 test("看板和召回页有独立地址，导航不携带查询或鉴权信息", async () => {
   const dashboard = await boot();
-  assert.deepEqual(dashboard.initialPages, [false]);
+  assert.deepEqual(dashboard.initialPages, ["dashboard"]);
   const recall = await boot({ pathname: "/spaces/demo/recall" });
   assert.deepEqual(recall.started, ["demo"]);
-  assert.deepEqual(recall.initialPages, [true]);
+  assert.deepEqual(recall.initialPages, ["recall"]);
   assert.equal(recall.pageDocument.title, "Chromie · 召回调试");
-  dashboard.window.chromieNavigate("work-notes", true, false);
+  dashboard.window.chromieNavigate("work-notes", "recall", false);
   assert.equal(dashboard.address.pathname, "/spaces/work-notes/recall");
   assert.deepEqual(dashboard.navigation[0], { replace: false, state: null, path: "/spaces/work-notes/recall" });
-  dashboard.window.chromieNavigate("work-notes", true, false);
+  dashboard.window.chromieNavigate("work-notes", "recall", false);
   assert.equal(dashboard.navigation.length, 1);
-  dashboard.window.chromieNavigate("demo", false, true);
+  dashboard.window.chromieNavigate("demo", "dashboard", true);
   assert.deepEqual(dashboard.navigation[1], { replace: true, state: null, path: "/spaces/demo/dashboard" });
-  dashboard.window.chromieNavigate("../../不合法空间", true, false);
+  dashboard.window.chromieNavigate("../../不合法空间", "recall", false);
   assert.equal(dashboard.navigation.length, 2);
 });
 
@@ -501,15 +500,15 @@ test("浏览器前进后退恢复页面，跨空间历史记录重新加载", as
   const app = await boot();
   app.address.pathname = "/spaces/work-notes/recall";
   app.events.get("popstate")();
-  assert.deepEqual(app.pages, [true]);
+  assert.deepEqual(app.pages, ["recall"]);
   app.address.pathname = "/spaces/work-notes/dashboard";
   app.events.get("popstate")();
-  assert.deepEqual(app.pages, [true, false]);
+  assert.deepEqual(app.pages, ["recall", "dashboard"]);
   app.address.pathname = "/spaces/demo/recall";
   app.events.get("popstate")();
   assert.equal(app.reloads(), 1);
   assert.equal(app.ended(), 1);
-  assert.deepEqual(app.pages, [true, false]);
+  assert.deepEqual(app.pages, ["recall", "dashboard"]);
 });
 
 test("跨空间历史跳转立即取消旧请求，延迟响应不能恢复旧内容", async () => {
@@ -574,7 +573,7 @@ test("关闭、切后台和切页取消取密，迟到原文不能重新显示",
     if (operation === "close") app.window.chromieCancelSecret();
     if (operation === "background") {app.pageDocument.hidden=true;app.events.get("visibilitychange")();}
     if (operation === "pagehide") app.events.get("pagehide")();
-    if (operation === "navigate") app.window.chromieNavigate("work-notes",true,false);
+    if (operation === "navigate") app.window.chromieNavigate("work-notes", "recall", false);
     if (operation === "logout") await app.window.chromieRequest("work-notes","logout","",9);
     assert.equal(app.requests[0].options.signal.aborted,true,operation);
     resolveResponse(secretResponse("迟到的虚构原文"));
@@ -658,7 +657,7 @@ test("同空间多个 Secret、隐藏关闭及同空间切页复用验密，固�
   assert.equal(app.window.chromieSecretVerified("work"), false);
   app.window.chromieCancelSecret();
   app.time.advance(240000);
-  app.window.chromieNavigate("demo", true, false);
+  app.window.chromieNavigate("demo", "recall", false);
   await app.window.chromieRevealSecret("demo", "01900000-0000-7000-8000-000000000001", "", 21);
   assert.equal(app.requests[1].options.headers["X-Chromie-Password"], "manual-demo-password");
   assert.equal(app.secretResponses.at(-1)[1], 200);
@@ -682,7 +681,7 @@ test("切后台隐藏原文但保留验证，刷新、退出、换空间及新�
     if (operation === "background") { app.pageDocument.hidden=true; app.events.get("visibilitychange")(); }
     if (operation === "pagehide") app.events.get("pagehide")();
     if (operation === "logout") await app.window.chromieRequest("demo", "logout", "", 1);
-    if (operation === "space") app.window.chromieNavigate("work", false, false);
+    if (operation === "space") app.window.chromieNavigate("work", "dashboard", false);
     if (operation === "login") await app.window.chromieRequest("demo", "login", "manual-demo-password", 1);
     assert.equal(app.window.chromieSecretVerified("demo"), operation === "background", operation);
     if (operation === "background") assert.equal(app.secretHides(), 1);
@@ -809,7 +808,7 @@ test("原生 composition 与 input 事件没有被替换或阻止", async () => 
 test("接入页面支持独立地址、顶栏和历史导航", async () => {
   const app = await boot({ pathname: "/spaces/work-notes/access" });
   assert.equal(app.pageDocument.title, "Chromie · 接入");
-  app.window.chromieNavigate("work-notes", false, false, true);
+  app.window.chromieNavigate("work-notes", "access", false);
   assert.equal(app.address.pathname, "/spaces/work-notes/access");
   app.events.get("popstate")();
   assert.deepEqual(app.pages, ["access"]);
@@ -953,7 +952,7 @@ test("采集页独立地址和历史导航，查询只进正文并使用同源 C
   assert.deepEqual(JSON.parse(request.options.body),payload);
   assert.equal(request.options.headers.Authorization,undefined);
   assert.equal(JSON.stringify([...app.storage]).includes("fictional-private-session"),false);
-  app.window.chromieNavigate("work-notes",false,false,false,true);
+  app.window.chromieNavigate("work-notes", "messages", false);
   assert.equal(app.address.pathname,"/spaces/work-notes/messages");
 });
 
@@ -1026,7 +1025,7 @@ test("普通文字指针在离开画布、换页与退出时恢复，不改变�
   app.events.get("pointerout")({ target: app.canvas });
   assert.equal(app.canvas.dataset.readingPointer, "false");
   app.window.chromieArrowPointer(true);
-  app.window.chromieNavigate("demo", true, false);
+  app.window.chromieNavigate("demo", "recall", false);
   assert.equal(app.canvas.dataset.readingPointer, "false");
   app.window.chromieArrowPointer(true);
   app.window.chromieCancel();
@@ -1081,4 +1080,108 @@ test("只读画布的原生复制只交付当前选区，空选区和编辑输�
   assert.equal(stopped, 1);
   assert.equal(app.requests.length, requests);
   assert.equal(app.storage.size, 0);
+});
+
+test("Skill 库支持直接进入，同源 Cookie 读取与收起时丢弃迟到详情", async () => {
+  let resolveDetail;
+  const app = await boot({pathname: "/spaces/demo/skills", transport: async url => ({
+    status: 200, text: () => url.endsWith("/skill-library")
+      ? Promise.resolve('{"items":[],"next":null}')
+      : new Promise(resolve => { resolveDetail = resolve; })
+  })});
+  assert.deepEqual(app.initialPages, ["skills"]);
+  await app.window.chromieSkills("demo", "list", "");
+  assert.equal(app.requests.at(-1).options.credentials, "same-origin");
+  assert.equal(app.requests.at(-1).options.cache, "no-store");
+  assert.equal(app.skillResponses.length, 1);
+  const pending = app.window.chromieSkills("demo", "detail", "00000000-0000-4000-8000-000000000001");
+  while (!resolveDetail) await Promise.resolve();
+  app.window.chromieCancelSkills("detail");
+  resolveDetail("旧详情");
+  await pending;
+  assert.equal(app.skillResponses.length, 1);
+  app.window.chromieNavigate("demo", "dashboard", false);
+  await app.window.chromieSkills("demo", "list", "");
+  assert.equal(app.skillResponses.length, 1);
+});
+
+test("包内文件按修订和完整路径读取，分页可拼回原文，下载保留原字节", async () => {
+  const path = "参考/流程 #1&2.md";
+  const id = "00000000-0000-4000-8000-000000000001";
+  const original = "\ufeff" + "甲".repeat(8190) + "🙂\r\n末行";
+  const bytes = new TextEncoder().encode(original);
+  const app = await boot({pathname: "/spaces/demo/skills", transport: async () => ({
+    status: 200, arrayBuffer: async () => bytes.buffer
+  })});
+  await app.window.chromieSkills("demo", "file", id, 7, path);
+  const request = app.requests.at(-1);
+  assert.equal(request.url, "/spaces/demo/skill-library/" + id + "/file?revision=7&path=" + encodeURIComponent(path));
+  assert.equal(request.options.credentials, "same-origin");
+  const preview = () => JSON.parse(app.skillResponses.at(-1)[4]);
+  const first = preview();
+  assert.equal(first.binary, false);
+  assert.equal(first.count, 2);
+  assert.equal(first.content.endsWith("\ud83d"), false);
+  app.window.chromieSkillFilePage(1);
+  assert.equal(first.content + preview().content, original);
+  assert.equal(app.requests.length, 1);
+  app.window.chromieDownloadSkillFile();
+  assert.equal(app.downloads[0].filename, "流程 #1&2.md");
+  assert.deepEqual(new Uint8Array(await app.downloads[0].blob.arrayBuffer()), bytes);
+});
+
+test("切换文件后迟到正文不会覆盖新文件，二进制可分页，收起后释放下载内容", async () => {
+  let finishOld;
+  const bytes = new Uint8Array(257); bytes[256] = 255;
+  const id = "00000000-0000-4000-8000-000000000001";
+  const app = await boot({pathname: "/spaces/demo/skills", transport: async url => ({
+    status: 200, arrayBuffer: () => url.endsWith("old.txt")
+      ? new Promise(resolve => { finishOld = resolve; })
+      : Promise.resolve(bytes.buffer)
+  })});
+  const old = app.window.chromieSkills("demo", "file", id, 1, "old.txt");
+  while (!finishOld) await Promise.resolve();
+  await app.window.chromieSkills("demo", "file", id, 1, "template.bin");
+  finishOld(new TextEncoder().encode("迟到内容").buffer);
+  await old;
+  assert.equal(app.skillResponses.length, 1);
+  app.window.chromieSkillFilePage(1);
+  const preview = JSON.parse(app.skillResponses.at(-1)[4]);
+  assert.equal(preview.binary, true);
+  assert.equal(preview.content, "00000100   ff");
+  app.window.chromieCancelSkills("file");
+  app.window.chromieDownloadSkillFile();
+  app.window.chromieSkillFilePage(0);
+  assert.equal(app.skillResponses.length, 2);
+  assert.equal(app.downloads.length, 0);
+});
+
+test("整包下载按卡片修订请求，版本冲突或离开页面后不保存文件", async () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  const bytes = new Uint8Array([80, 75, 3, 4]);
+  let pendingBlob;
+  const archive = () => ({
+    status: 200, headers: new Headers({"content-disposition": 'attachment; filename="demo-skill.zip"', "content-type": "application/zip"}),
+    blob: () => new Promise(resolve => { pendingBlob = resolve; })
+  });
+  const app = await boot({pathname: "/spaces/demo/skills", transport: async url =>
+    url.endsWith("revision=1") ? {status: 409} : archive()
+  });
+  const download = revision => app.window.chromieSkillArchive("demo", id, revision);
+  await download(1);
+  assert.deepEqual(app.skillResponses.at(-1), ["demo", "archive", id, 409, ""]);
+  assert.equal(app.downloads.length, 0);
+  const success = download(2);
+  while (!pendingBlob) await Promise.resolve();
+  assert.equal(app.requests.at(-1).url, "/spaces/demo/skill-library/" + id + "/archive?revision=2");
+  assert.equal(app.requests.at(-1).options.credentials, "same-origin");
+  pendingBlob(new Blob([bytes])); await success;
+  assert.equal(app.downloads[0].filename, "demo-skill.zip");
+  assert.deepEqual(new Uint8Array(await app.downloads[0].blob.arrayBuffer()), bytes);
+  pendingBlob = undefined;
+  const late = download(2);
+  while (!pendingBlob) await Promise.resolve();
+  app.window.chromieCancelSkills("archive");
+  pendingBlob(new Blob([bytes])); await late;
+  assert.equal(app.downloads.length, 1);
 });

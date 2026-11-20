@@ -26,15 +26,7 @@ extern "C" {
     #[wasm_bindgen(js_namespace = window, js_name = chromieForgetPassword)]
     fn forget_password() -> bool;
     #[wasm_bindgen(js_namespace = window, js_name = chromieNavigate)]
-    fn navigate_browser(
-        space: &str,
-        recall_page: bool,
-        replace: bool,
-        access_page: bool,
-        messages_page: bool,
-        settings_page: bool,
-        transfer_page: bool,
-    );
+    fn navigate_browser(space: &str, page: &str, replace: bool);
     #[wasm_bindgen(js_namespace = window, js_name = chromieCancel)]
     fn cancel();
     #[wasm_bindgen(js_namespace = window, js_name = chromieReady)]
@@ -148,23 +140,13 @@ fn prefill_password(ui: &Dashboard) {
 }
 
 #[wasm_bindgen]
-pub fn start(
-    initial_space: String,
-    recall_page: bool,
-    access_page: bool,
-    messages_page: bool,
-    settings_page: bool,
-    transfer_page: bool,
-) -> Result<(), JsValue> {
+pub fn start(initial_space: String, page: &str) -> Result<(), JsValue> {
     let ui = Dashboard::new().map_err(|_| JsValue::from_str("无法创建看板界面"))?;
     ui.set_space_id(initial_space.into());
-    ui.set_recall_page(recall_page);
-    ui.set_access_page(access_page);
-    ui.set_messages_page(messages_page);
-    ui.set_settings_page(settings_page);
-    ui.set_transfer_page(transfer_page);
+    ui.set_current_page(page.into());
     let session = Rc::new(RefCell::new(Session::default()));
     crate::selection::install(&ui);
+    crate::skills_browser::install(&ui);
     crate::knowledge_browser::install(&ui, session.clone());
     crate::provider_browser::install(&ui, session.clone());
     crate::text_browser::install(&ui, session.clone());
@@ -175,12 +157,13 @@ pub fn start(
     crate::messages_browser::install(&ui, session.clone());
     crate::recall_browser::install(&ui, session.clone());
     crate::secret_browser::install(&ui, session.clone());
-    ui.on_show_dashboard(|| navigate(false, false, false, false, false));
-    ui.on_show_recall(|| navigate(true, false, false, false, false));
-    ui.on_show_access(|| navigate(false, true, false, false, false));
-    ui.on_show_messages(|| navigate(false, false, true, false, false));
-    ui.on_show_transfer(|| navigate(false, false, false, false, true));
-    ui.on_show_settings(|| navigate(false, false, false, true, false));
+    ui.on_show_skills(|| navigate("skills"));
+    ui.on_show_dashboard(|| navigate("dashboard"));
+    ui.on_show_recall(|| navigate("recall"));
+    ui.on_show_access(|| navigate("access"));
+    ui.on_show_messages(|| navigate("messages"));
+    ui.on_show_transfer(|| navigate("transfer"));
+    ui.on_show_settings(|| navigate("settings"));
     let weak = ui.as_weak();
     ui.on_space_edited(move || {
         if let Some(ui) = weak.upgrade() {
@@ -273,11 +256,7 @@ pub fn start(
     let state = session.clone();
     timer.start(TimerMode::Repeated, Duration::from_secs(15), move || {
         if let Some(ui) = weak.upgrade()
-            && !ui.get_recall_page()
-            && !ui.get_access_page()
-            && !ui.get_messages_page()
-            && !ui.get_settings_page()
-            && !ui.get_transfer_page()
+            && ui.get_current_page() == "dashboard"
         {
             request(&ui, &state);
         }
@@ -297,70 +276,20 @@ pub fn start(
     slint::run_event_loop().map_err(|_| JsValue::from_str("无法启动看板界面"))
 }
 
-fn navigate(
-    recall_page: bool,
-    access_page: bool,
-    messages_page: bool,
-    settings_page: bool,
-    transfer_page: bool,
-) {
-    // 地址切换会清理旧请求；先完成导航，再加载目标页，避免新列表请求被误取消。
+fn navigate(page: &str) {
     CONTROLLER.with_borrow(|current| {
         if let Some(controller) = current
             && let Some(ui) = controller.ui.upgrade()
             && ui.get_unlocked()
         {
-            navigate_browser(
-                &controller.session.borrow().space,
-                recall_page,
-                false,
-                access_page,
-                messages_page,
-                settings_page,
-                transfer_page,
-            );
+            navigate_browser(&controller.session.borrow().space, page, false);
         }
     });
-    set_pages(
-        recall_page,
-        access_page,
-        messages_page,
-        settings_page,
-        transfer_page,
-    );
+    set_page(page);
 }
 
 #[wasm_bindgen]
-pub fn set_page(recall_page: bool) {
-    set_pages(recall_page, false, false, false, false);
-}
-
-#[wasm_bindgen]
-pub fn set_access_page(access_page: bool) {
-    set_pages(false, access_page, false, false, false);
-}
-
-#[wasm_bindgen]
-pub fn set_messages_page(messages_page: bool) {
-    set_pages(false, false, messages_page, false, false);
-}
-
-#[wasm_bindgen]
-pub fn set_settings_page(settings_page: bool) {
-    set_pages(false, false, false, settings_page, false);
-}
-
-#[wasm_bindgen]
-pub fn set_transfer_page(transfer_page: bool) {
-    set_pages(false, false, false, false, transfer_page);
-}
-fn set_pages(
-    recall_page: bool,
-    access_page: bool,
-    messages_page: bool,
-    settings_page: bool,
-    transfer_page: bool,
-) {
+pub fn set_page(page: &str) {
     let active = CONTROLLER
         .with_borrow(|current| current.as_ref().map(|c| (c.ui.clone(), c.session.clone())));
     let Some((weak, session)) = active else {
@@ -369,13 +298,8 @@ fn set_pages(
     let Some(ui) = weak.upgrade() else {
         return;
     };
-    if ui.get_recall_page() == recall_page
-        && ui.get_access_page() == access_page
-        && ui.get_messages_page() == messages_page
-        && ui.get_settings_page() == settings_page
-        && ui.get_transfer_page() == transfer_page
-    {
-        if access_page {
+    if ui.get_current_page() == page {
+        if page == "access" {
             crate::access_browser::route_changed();
         }
         return;
@@ -386,40 +310,34 @@ fn set_pages(
     crate::knowledge_browser::clear();
     crate::text_browser::clear();
     crate::transfer_browser::clear();
+    crate::skills_browser::clear();
     crate::recall_browser::clear();
     crate::access_browser::clear();
     crate::messages_browser::clear();
     ui.set_recall_query(SharedString::default());
     ui.set_debug_open(false);
-    ui.set_recall_page(recall_page);
-    ui.set_access_page(access_page);
-    ui.set_messages_page(messages_page);
-    ui.set_settings_page(settings_page);
-    ui.set_transfer_page(transfer_page);
+    ui.set_current_page(page.into());
     ui.invoke_reset_scroll();
-    if access_page && ui.get_unlocked() {
+    if page == "access" && ui.get_unlocked() {
         crate::access_browser::load();
     }
-    if messages_page && ui.get_unlocked() {
+    if page == "messages" && ui.get_unlocked() {
         crate::messages_browser::load();
     }
-    if settings_page && ui.get_unlocked() {
+    if page == "settings" && ui.get_unlocked() {
         crate::provider_browser::load();
         crate::model_browser::load();
     }
     if ui.get_unlocked() {
         crate::text_browser::load(false);
     }
-    if transfer_page && ui.get_unlocked() {
+    if page == "skills" && ui.get_unlocked() {
+        crate::skills_browser::load(false);
+    }
+    if page == "transfer" && ui.get_unlocked() {
         crate::transfer_browser::load();
     }
-    if !recall_page
-        && !access_page
-        && !messages_page
-        && !settings_page
-        && !transfer_page
-        && ui.get_unlocked()
-    {
+    if page == "dashboard" && ui.get_unlocked() {
         request(&ui, &session);
     }
 }
@@ -466,6 +384,7 @@ pub fn end_session() {
     crate::knowledge_browser::clear();
     crate::text_browser::clear();
     crate::transfer_browser::clear();
+    crate::skills_browser::clear();
     crate::secret_browser::close();
     crate::recall_browser::clear();
     crate::access_browser::clear();
@@ -572,15 +491,7 @@ pub fn receive_snapshot(generation: u32, status: u16, body: String, storage_fail
     }
     state.borrow_mut().authenticated();
     ui.set_space_id(snapshot.space_id.into());
-    navigate_browser(
-        &state.borrow().space,
-        ui.get_recall_page(),
-        true,
-        ui.get_access_page(),
-        ui.get_messages_page(),
-        ui.get_settings_page(),
-        ui.get_transfer_page(),
-    );
+    navigate_browser(&state.borrow().space, ui.get_current_page().as_str(), true);
     let first_snapshot = !ui.get_unlocked();
     ui.set_unlocked(true);
     ui.set_can_manage_system(snapshot.can_manage_system);
@@ -594,6 +505,9 @@ pub fn receive_snapshot(generation: u32, status: u16, body: String, storage_fail
         if ui.get_settings_page() {
             crate::provider_browser::load();
             crate::model_browser::load();
+        }
+        if ui.get_skills_page() {
+            crate::skills_browser::load(false);
         }
         if ui.get_transfer_page() {
             crate::transfer_browser::load();

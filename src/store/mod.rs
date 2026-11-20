@@ -30,6 +30,9 @@ mod secret_audit;
 mod secret_contracts;
 mod secrets;
 mod session_list;
+mod skill_retention;
+mod skill_usage;
+mod skills;
 mod text_settings;
 mod topic_maintenance;
 mod transfer;
@@ -60,6 +63,7 @@ pub struct Store {
     pub search: Search,
     secret_cipher: Option<crate::secret_crypto::SecretCipher>,
     actor: Option<crate::agent::AgentAccess>,
+    skill_objects: std::sync::Arc<std::sync::OnceLock<crate::skill_objects::BucketStore>>,
     model_runtime: std::sync::Arc<crate::model_runtime::ModelRuntime>,
     embedding_backoff:
         std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<Uuid, std::time::Instant>>>,
@@ -72,6 +76,7 @@ impl Store {
             search,
             secret_cipher: None,
             actor: None,
+            skill_objects: Default::default(),
             model_runtime: Default::default(),
             embedding_backoff: Default::default(),
         }

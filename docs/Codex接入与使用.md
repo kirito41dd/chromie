@@ -229,3 +229,7 @@ http_headers = { Authorization = "Bearer 填入MCP密钥" }
 - 初始化提示冲突：先核对原连接，明确更换后才使用 --replace，不删除其他 MCP 或重新生成根私钥。
 
 源码构建、验证与当前限制见 [Codex 插件接入实施](Codex插件接入实施.md)。
+
+## 使用空间中的 Skill
+
+宿主支持 Skills over MCP 时，通过原生目录发现流程。其他宿主由 Chromie 自带的使用指南引导，首次需要惯例时用 `list_skills` 按作者的名称和描述选择，可翻页；同一对话复用目录，选中后用 `read_skill` 读入口和需要的附件。需要与同事分享时，拉取一份普通 Skill 目录即可。参见[云端 Skill 的发布、回退和分享](../wiki/云端Skill.md)。

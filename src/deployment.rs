@@ -1,4 +1,7 @@
 //! 容器部署的首次初始化与恢复边界；不读取主机开发配置。
+#[path = "deployment_skills.rs"]
+mod skill_storage;
+
 use crate::{
     config::Config,
     entity::spaces,
@@ -208,7 +211,11 @@ pub fn initialize(config: &Path, data: &Path) -> Result<bool> {
             "已完成初始化但实例清单缺失，请恢复原 config，未重新初始化",
         ));
     }
-    if !exists && (populated(&data.join("mysql"))? || populated(&data.join("qdrant"))?) {
+    if !exists
+        && (populated(&data.join("mysql"))?
+            || populated(&data.join("qdrant"))?
+            || populated(&data.join("rustfs"))?)
+    {
         return Err(Error::invalid(
             "已有持久数据但缺少完整实例配置，请恢复原 config；拒绝生成新私钥或凭据",
         ));
@@ -221,6 +228,7 @@ pub fn initialize(config: &Path, data: &Path) -> Result<bool> {
                 "已初始化实例缺少 MySQL 数据，请恢复原 data，未创建空库替代",
             ));
         }
+        skill_storage::prepare(config, data)?;
         return Ok(false);
     }
     directory(&config.join("mysql"), true)?;
@@ -293,6 +301,7 @@ pub fn initialize(config: &Path, data: &Path) -> Result<bool> {
     // 最后发布实例清单；之前失败的空实例可续做，已有文件始终不覆盖。
     create(&config.join("instance.json"), &encode(&manifest)?, false)?;
     Deployment::load(config)?;
+    skill_storage::prepare(config, data)?;
     Ok(true)
 }
 

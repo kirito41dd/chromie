@@ -16,6 +16,10 @@ pub(crate) const FILES: &[(&str, &[u8])] = &[
         include_bytes!("../integrations/codex/plugin/skills/memory/references/organization.md"),
     ),
     (
+        "references/cloud-skills.md",
+        include_bytes!("../integrations/codex/plugin/skills/memory/references/cloud-skills.md"),
+    ),
+    (
         "references/secrets.md",
         include_bytes!("../integrations/codex/plugin/skills/memory/references/secrets.md"),
     ),

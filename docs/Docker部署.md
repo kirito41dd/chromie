@@ -1,6 +1,6 @@
 # Docker 部署
 
-首次部署不需要 `.env` 或手写密码。Compose 自动准备 MySQL 8.4、Qdrant 1.20、Chromie 与 Slint/Wasm 看板，执行 SeaORM 迁移，并创建 `personal` 个人空间。
+首次部署不需要 `.env` 或手写密码。Compose 自动准备 MySQL 8.4、Qdrant 1.20、RustFS、Chromie 与 Slint/Wasm 看板，执行 SeaORM 迁移，并创建 `personal` 个人空间。
 
 ## 启动
 
@@ -14,7 +14,7 @@ docker compose up -d --wait
 docker compose ps
 ```
 
-首次拉取需要下载 Chromie、MySQL 和 Qdrant 镜像，随后服务自动完成初始化。公开镜像可匿名拉取；发布者使用的 Docker Hub Token 不需要配置到用户设备。仓库根目录的 `compose.yaml` 仍用于源码构建，与 Release 的纯镜像 Compose 分开，见下方[镜像构建与客户端平台](#镜像构建与客户端平台)。
+首次拉取需要下载 Chromie、MySQL、Qdrant 和 RustFS 镜像，随后服务自动完成初始化。公开镜像可匿名拉取；发布者使用的 Docker Hub Token 不需要配置到用户设备。仓库根目录的 `compose.yaml` 仍用于源码构建，与 Release 的纯镜像 Compose 分开，见下方[镜像构建与客户端平台](#镜像构建与客户端平台)。
 
 浏览器打开 [个人空间](http://127.0.0.1:8732/spaces/personal/dashboard)。在**自己的终端**查看初始空间与密码；不要将输出发给 Agent 或贴入聊天：
 
@@ -45,11 +45,11 @@ docker compose exec chromie chromie-server --help
 | 目录 | 内容 | 处理要求 |
 | --- | --- | --- |
 | config/ | 服务配置、实例根私钥、服务凭据、初始登录信息与初始化标记 | 私密保存，保留原文件并安全备份 |
-| data/ | data/mysql/ 权威数据、data/qdrant/ 检索索引 | 持久保存，与对应配置一同恢复 |
+| data/ | data/mysql/ 权威数据、data/qdrant/ 检索索引、data/rustfs/ 用户 Skill 原始文件 | 持久保存，与对应配置一同恢复 |
 
 普通启动会保留原根私钥、服务凭据、空间密码和已有数据，不会重置为初始密码。已有数据却缺少完整配置或根私钥时拒绝重新初始化，应恢复原文件。实例根私钥丢失后历史 Secret 无法解密，不能用新私钥替代。
 
-MySQL 与 Qdrant 不发布宿主端口，默认仅将 Chromie 发布到 `127.0.0.1:8732`。长期服务使用自动重启与有限日志轮转；Docker 引擎本身是否开机启动由宿主系统负责。
+MySQL、Qdrant 与 RustFS 均不发布宿主端口，默认仅将 Chromie 发布到 `127.0.0.1:8732`。长期服务使用自动重启与有限日志轮转；Docker 引擎本身是否开机启动由宿主系统负责。
 
 ## 状态、停止与升级
 
@@ -83,7 +83,7 @@ python3 scripts/build-docker-release.py
 
 接收方按包内说明先 `docker load -i` 导入对应架构镜像，再运行 `docker compose up -d`，无需创建 .env；MySQL 和 Qdrant 仍使用其官方镜像。分发包不含任何实例配置或个人数据。
 
-备份时先停止整套服务，再以有权限的本地工具分别保存 config 与 data。恢复到空目录时放回**对应的一组原配置和数据**，再启动；不得只恢复数据库后重新生成私钥。单独复制正在写入的 MySQL 数据目录不能作为一致性备份。
+备份时先停止整套服务，再以有权限的本地工具分别保存 config 与 data。恢复到空目录时放回**对应的一组原配置和数据**，再启动；不得只恢复数据库后重新生成私钥。RustFS 的应用与管理凭据位于 config/rustfs/，应与原对象卷一起恢复。恢复后用 CLI 拉取一份包含附件的 Skill 并核对摘要。单独复制正在写入的 MySQL 数据目录不能作为一致性备份。
 
 ## 修改端口与外部访问地址
 

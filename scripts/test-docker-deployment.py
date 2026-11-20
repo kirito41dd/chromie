@@ -171,6 +171,22 @@ def main():
             command(client_command(["secret", "get", "--config", client_path, "--ref", receipt["secret_ref"], "--revision", "1", "--out", output_path]))
             assert output.read_bytes() == secret
             results["client_download_checksum_and_secret_file"] = {"target": target, "execution": "container" if args.client_container else "host"}
+            # 从本实例下载的 CLI 也必须支持当前服务的 Skill 协议，避免把旧客户端当成验收成功。
+            source = directory / "deployment-check"
+            source.mkdir()
+            (source / "SKILL.md").write_text("---\nname: deployment-check\ndescription: 验证部署后的文件交换。\n---\n读取测试模板。\n")
+            (source / "template.bin").write_bytes(bytes(range(256)))
+            recipient = directory / "recipient"
+            recipient.mkdir()
+            client_root = Path("/fixture") if args.client_container else directory
+            env["CHROMIE_SKILL_STATE_DIR"] = str(directory / "skill-state")
+            published = json.loads(command(client_command(["skill", "push", str(client_root / source.name),
+                "--config", client_path, "--reason", "虚构部署验收"])).stdout)
+            command(client_command(["skill", "pull", published["skill_id"], "--config", client_path,
+                "--out", str(client_root / "recipient" / source.name)]))
+            for filename in ("SKILL.md", "template.bin"):
+                assert (recipient / source.name / filename).read_bytes() == (source / filename).read_bytes()
+            results["downloaded_cli_publishes_and_pulls_skill"] = True
             if not args.client_container:
                 import sys
                 probe = directory / "exec-probe.py"

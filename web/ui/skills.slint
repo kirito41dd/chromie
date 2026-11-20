@@ -1,0 +1,157 @@
+import { Theme, ActionButton } from "common.slint";
+import { SelectableText } from "selectable-text.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct LibrarySkill {
+    id: string, name: string, description: string, revision: int,
+}
+
+component FileChoice inherits Rectangle {
+    in property <string> path;
+    in property <bool> selected;
+    callback activated;
+    height: 44px; border-radius: 6px;
+    background: root.selected ? Theme.accent-soft : (mouse.has-hover ? Theme.surface-hover : Theme.paper);
+    border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent;
+    forward-focus: focus; accessible-role: button; accessible-label: root.path;
+    accessible-action-default => { root.activated(); }
+    Text {
+        x: 10px; width: parent.width - 20px; height: parent.height;
+        text: root.path; font-size: 13px; font-weight: root.selected ? 600 : 400;
+        color: root.selected ? Theme.ink : Theme.secondary;
+        vertical-alignment: center; overflow: elide;
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if !event.repeat && (event.text == Key.Return || event.text == " ") {
+                root.activated(); accept
+            } else { reject }
+        }
+    }
+    mouse := TouchArea {
+        mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); }
+    }
+}
+
+export component SkillsPage inherits VerticalLayout {
+    in property <[LibrarySkill]> rows;
+    in property <bool> compact;
+    in property <bool> busy;
+    in property <bool> more;
+    in property <string> error;
+    in property <string> selected;
+    in property <string> entry;
+    in property <[string]> paths;
+    in property <string> path;
+    in property <int> revision;
+    in property <string> file-note;
+    in property <int> file-page;
+    in property <int> file-count;
+    callback open-file(string);
+    callback turn-file(int);
+    callback download();
+    in property <string> downloading;
+    callback archive(string, int);
+    in property <string> detail-note;
+    callback select(string);
+    callback load(bool);
+    spacing: 10px; alignment: start; vertical-stretch: 0;
+    HorizontalLayout {
+        cross-axis-alignment: center;
+        Text {
+            text: root.rows.length == 0 ? "已发布的 Skill" : "已发布的 Skill · " + root.rows.length + (root.more ? "+" : "");
+            color: Theme.ink; font-weight: 600; font-size: 16px; horizontal-stretch: 1;
+        }
+        ActionButton { label: root.busy ? "读取中…" : "刷新"; subtle: true; disabled: root.busy; activated => { root.load(false); } }
+    }
+    if root.error != "": SelectableText { text: root.error; text-color: Theme.danger; }
+    if root.rows.length == 0 && !root.busy && root.error == "": Rectangle {
+        height: empty-layout.preferred-height;
+        background: Theme.paper; border-color: Theme.border; border-width: 1px; border-radius: 12px;
+        empty-layout := VerticalLayout {
+            padding: 20px; spacing: 8px;
+            Text { text: "空间里还没有 Skill"; color: Theme.ink; font-size: 16px; font-weight: 600; }
+            SelectableText { text: "可以让已接入的 Agent 将常用流程发布到这个空间。"; text-color: Theme.secondary; }
+        }
+    }
+    for skill in root.rows: Rectangle {
+        height: card-layout.preferred-height;
+        background: Theme.paper; border-width: 1px; border-color: Theme.border; border-radius: 12px;
+        card-layout := VerticalLayout {
+            padding: root.compact ? 14px : 20px; spacing: 10px;
+            SelectableText { text: skill.name; font-weight: 600; font-size: 17px; }
+            SelectableText { text: skill.description; text-color: Theme.secondary; }
+            HorizontalLayout {
+                spacing: 6px; cross-axis-alignment: center;
+                Text {
+                    text: "修订 " + (root.selected == skill.id && root.revision > 0 ? root.revision : skill.revision);
+                    color: Theme.secondary; font-size: 12px; horizontal-stretch: 1;
+                }
+                ActionButton { label: root.selected == skill.id ? "收起" : "查看内容"; subtle: true; activated => { root.select(skill.id); } }
+                ActionButton {
+                    label: root.downloading == skill.id ? "正在打包…" : "下载整包";
+                    subtle: true; disabled: root.downloading != "";
+                    activated => { root.archive(skill.id, root.selected == skill.id && root.revision > 0 ? root.revision : skill.revision); }
+                }
+            }
+            if root.selected == skill.id: VerticalLayout {
+                spacing: 8px;
+                Rectangle { height: 1px; background: Theme.border; }
+                if root.detail-note != "": SelectableText { text: root.detail-note; text-color: Theme.secondary; }
+                if root.paths.length > 0: Rectangle {
+                    // 宽屏并排浏览；窄屏将目录置于正文上方，两栏共用一次选中状态。
+                    height: root.compact ? reader.y + reader.preferred-height : max(nav.preferred-height, reader.preferred-height);
+                    nav := VerticalLayout {
+                        x: 0px; y: 0px;
+                        width: root.compact ? parent.width : min(270px, parent.width * 0.30);
+                        height: self.preferred-height; spacing: 6px; alignment: start;
+                        Text { text: "包内文件 · " + root.paths.length; font-weight: 600; color: Theme.secondary; font-size: 13px; }
+                        directory := ScrollView {
+                            height: min(root.compact ? 132px : 308px, root.paths.length * 44px + 2px);
+                            horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+                            VerticalLayout {
+                                width: directory.visible-width;
+                                for path in root.paths: FileChoice {
+                                    path: path; selected: root.path == path;
+                                    activated => { root.open-file(path); }
+                                }
+                            }
+                        }
+                    }
+                    reader := VerticalLayout {
+                        x: root.compact ? 0px : nav.width + 20px;
+                        y: root.compact ? nav.preferred-height + 12px : 0px;
+                        width: parent.width - self.x; height: self.preferred-height;
+                        spacing: 8px; alignment: start;
+                        SelectableText { text: root.path; font-size: 15px; font-weight: 600; wrap: char-wrap; }
+                        if root.file-note != "": SelectableText { text: root.file-note; text-color: Theme.secondary; }
+                        if root.entry != "": Rectangle {
+                            height: min(340px, max(110px, measure.preferred-height + 24px)); background: Theme.canvas; border-radius: 8px;
+                            measure := Text { visible: false; width: viewer.visible-width; text: root.entry; wrap: char-wrap; font-size: 14px; }
+                            viewer := ScrollView {
+                                x: 10px; y: 10px; width: parent.width - 20px; height: parent.height - 20px;
+                                horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+                                in property <int> page-number: root.file-page;
+                                changed page-number => { self.content-y = 0px; }
+                                in property <string> current-file: root.path;
+                                changed current-file => { self.content-y = 0px; }
+                                SelectableText { width: viewer.visible-width; text: root.entry; font-size: 14px; text-pointer: true; wrap: char-wrap; }
+                            }
+                        }
+                        if root.file-count > 1: HorizontalLayout {
+                            spacing: 6px; cross-axis-alignment: center;
+                            ActionButton { label: "上一页"; subtle: true; disabled: root.file-page == 0; activated => { root.turn-file(root.file-page - 1); } }
+                            Text { text: (root.file-page + 1) + " / " + root.file-count; color: Theme.secondary; horizontal-alignment: center; }
+                            ActionButton { label: "下一页"; subtle: true; disabled: root.file-page + 1 >= root.file-count; activated => { root.turn-file(root.file-page + 1); } }
+                        }
+                        if root.file-count > 0: HorizontalLayout {
+                            alignment: start;
+                            ActionButton { label: "下载原文件"; subtle: true; activated => { root.download(); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if root.more: ActionButton { label: "加载更多"; subtle: true; disabled: root.busy; activated => { root.load(true); } }
+}

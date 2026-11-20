@@ -41,3 +41,8 @@ pub mod conversation_titles;
 pub mod extraction_items;
 
 pub mod maintenance_items;
+pub mod skill_revision_files;
+pub mod skill_revisions;
+pub mod skill_usage_reports;
+pub mod skills;
+pub mod stored_objects;

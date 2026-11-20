@@ -10,6 +10,7 @@ mod generated {
         #[style = "fluent-light"]
         export { ExtractionUsageView, ExtractionJob, ExtractionDecision } from "../ui/extraction.slint";
         export { ConversationRow, CapturedRow } from "../ui/messages.slint";
+        export { LibrarySkill } from "../ui/skills.slint";
         export { TransferRow } from "../ui/transfer.slint";
         export { AgentRow } from "../ui/access.slint";
         export { SecretLine } from "../ui/secret-dialog.slint";
@@ -24,8 +25,8 @@ mod generated {
 
 pub use generated::{
     AgentRow, CapturedRow, ConversationRow, CopyBridge, Dashboard, ExtractionDecision,
-    ExtractionJob, ExtractionUsageView, KnowledgeRow, MemoryRow, PointerBridge, RecallOverview,
-    RecallRow, RecallStage, SecretLine, TransferRow, UsageDay, UsageTotal,
+    ExtractionJob, ExtractionUsageView, KnowledgeRow, LibrarySkill, MemoryRow, PointerBridge,
+    RecallOverview, RecallRow, RecallStage, SecretLine, TransferRow, UsageDay, UsageTotal,
 };
 #[cfg(target_arch = "wasm32")]
 mod knowledge_browser;
@@ -106,9 +107,13 @@ pub use recall_browser::receive_recall;
 
 #[cfg(target_arch = "wasm32")]
 pub use browser::{
-    end_session, receive_snapshot, resize_viewport, restore_session, set_access_page,
-    set_messages_page, set_page, set_settings_page, set_transfer_page, start,
+    end_session, receive_snapshot, resize_viewport, restore_session, set_page, start,
 };
+
+#[cfg(target_arch = "wasm32")]
+mod skills_browser;
+#[cfg(target_arch = "wasm32")]
+pub use skills_browser::receive_skills;
 
 #[cfg(test)]
 mod layout_tests;

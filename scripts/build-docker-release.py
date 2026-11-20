@@ -54,7 +54,7 @@ def main():
         "仅自动创建 config/ 与 data/ 两个持久目录，无需 .env。\n"
         "初始密码只写 config/initial-space.txt，请在自己的终端查看，不发给 Agent。\n"
         "保留并安全备份原 config 与 data；私钥丢失不能用重新生成来修复。\n"
-        "MySQL 与 Qdrant 仍需可从 Docker 获取；离线部署也应预先导入这两个官方镜像。\n"
+        "离线部署前请预先导入 compose.yaml 指定版本和目标架构的 MySQL、Qdrant 与 RustFS 镜像。\n"
     )
     print(json.dumps({"image": args.image, "platform": target, "output": str(output), "archive_bytes": archive.stat().st_size}, ensure_ascii=False))
 

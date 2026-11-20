@@ -159,6 +159,30 @@ async fn login_cookie_is_persistent_space_scoped_and_revoked_by_password_change(
         "JWT 不进入响应正文"
     );
     let credential = format!("{}={}", cookie.name(), cookie.value());
+    let library = format!("{prefix}/skill-library");
+    assert_eq!(client.get(&library).send().await.unwrap().status(), 401);
+    let page: Value = client
+        .get(&library)
+        .header("cookie", &credential)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(page, serde_json::json!({"items": [], "next": null}));
+    assert_eq!(
+        client
+            .get(format!("{base}/spaces/{}/skill-library", life.as_str()))
+            .header("cookie", &credential)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
     let response = client
         .get(format!("{prefix}/dashboard-data"))
         .header("cookie", &credential)

@@ -1,3 +1,4 @@
+import { SkillsPage, LibrarySkill } from "skills.slint";
 import { ExtractionUsageView, ExtractionUsageCard, ExtractionResults, ExtractionReader, ExtractionJob, ExtractionDecision } from "extraction.slint";
 import { TransferPage, TransferRow, TransferUnlockDialog } from "transfer.slint";
 import { TopicNavigation, MemoryReader, KnowledgeRow } from "knowledge.slint";
@@ -358,8 +359,31 @@ export component Dashboard inherits Window {
     in property <UsageTotal> model-usage-total;
     in property <string> model-usage-note;
     in property <[UsageDay]> model-usage-days;
-    in property <bool> settings-page;
-    in property <bool> transfer-page;
+    in property <string> current-page: "dashboard";
+    out property <bool> skills-page: root.current-page == "skills";
+    in property <[LibrarySkill]> library-skills;
+    in property <bool> library-busy;
+    in property <string> library-error;
+    in property <string> library-next;
+    in property <string> library-selected;
+    in property <string> library-entry;
+    in property <[string]> library-paths;
+    in property <int> library-revision;
+    in property <string> library-path;
+    in property <string> library-file-note;
+    in property <int> library-file-page;
+    in property <int> library-file-count;
+    callback library-open-file(string);
+    callback library-turn-file(int);
+    callback library-download();
+    in property <string> library-downloading;
+    callback library-archive(string, int);
+    in property <string> library-detail-note;
+    callback library-select(string);
+    callback library-load(bool);
+    callback show-skills;
+    out property <bool> settings-page: root.current-page == "settings";
+    out property <bool> transfer-page: root.current-page == "transfer";
     in property <bool> transfer-busy;
     in property <bool> transfer-export-feedback;
     in property <bool> transfer-preview-ready;
@@ -436,7 +460,7 @@ export component Dashboard inherits Window {
     callback model-cancel-confirm;
     in property <int> memory-order;
     callback change-memory-order(int);
-    in property <bool> messages-page: false;
+    out property <bool> messages-page: root.current-page == "messages";
     in property <bool> messages-busy: false;
     in property <string> messages-error;
     in property <[string]> messages-agents;
@@ -465,7 +489,7 @@ export component Dashboard inherits Window {
     callback messages-turn-messages(int);
     callback messages-expand(string);
 
-    in property <bool> access-page: false;
+    out property <bool> access-page: root.current-page == "access";
     in property <bool> access-busy: false;
     in property <bool> access-loaded: false;
     in property <bool> access-advanced-open: false;
@@ -541,7 +565,7 @@ export component Dashboard inherits Window {
     focus-secret-toggle => { secret-dialog.focus-toggle(); }
     callback focus-secret-password;
     focus-secret-password => { secret-dialog.focus-password(); }
-    title: root.transfer-page ? "Chromie · 炼化／夺舍" : root.settings-page ? "Chromie · 系统设置" : root.messages-page ? "Chromie · 采集消息" : root.access-page ? "Chromie · 接入" : root.recall-page ? "Chromie · 召回调试" : "Chromie · 看板";
+    title: root.skills-page ? "Chromie · Skill 库" : root.transfer-page ? "Chromie · 炼化／夺舍" : root.settings-page ? "Chromie · 系统设置" : root.messages-page ? "Chromie · 采集消息" : root.access-page ? "Chromie · 接入" : root.recall-page ? "Chromie · 召回调试" : "Chromie · 看板";
     preferred-width: 1240px; preferred-height: 860px;
     min-width: 240px; min-height: 160px;
     max-width: 100000px; max-height: 100000px;
@@ -554,7 +578,7 @@ export component Dashboard inherits Window {
     in-out property <string> space-id;
     in-out property <string> password;
     in-out property <bool> remember-password: false;
-    in property <bool> recall-page: false;
+    out property <bool> recall-page: root.current-page == "recall";
     in-out property <bool> debug-open: false;
     in property <string> debug-meta;
     in property <string> debug-request;
@@ -603,12 +627,13 @@ export component Dashboard inherits Window {
     VerticalLayout {
         spacing: 0px;
         app-header := AppHeader {
-            transfer-page: root.transfer-page; settings-page: root.settings-page; can-manage: root.can-manage-system;
+            skills-page: root.skills-page; transfer-page: root.transfer-page; settings-page: root.settings-page; can-manage: root.can-manage-system;
             unlocked: root.unlocked; recall-page: root.recall-page; messages-page: root.messages-page; access-page: root.access-page;
             compact: root.viewport-width < 1040px; page-padding: root.page-padding;
-            show-brand: root.viewport-width >= 420px || !root.unlocked;
-            show-icon: !(root.can-manage-system && root.viewport-width < 380px);
-            dense: root.viewport-width < 340px;
+            show-brand: root.viewport-width >= 500px || !root.unlocked;
+            show-icon: !(root.viewport-width < 410px);
+            dense: root.viewport-width < 385px;
+            show-skills => { root.show-skills(); }
             show-dashboard => { root.show-dashboard(); }
             show-recall => { root.show-recall(); }
             show-access => { root.show-access(); } show-messages => { root.show-messages(); }
@@ -668,37 +693,37 @@ export component Dashboard inherits Window {
                 if root.unlocked: VerticalLayout {
                     spacing: root.compact ? 20px : 22px;
                     PageHeading {
-                        compact: root.compact; loading: root.loading; refresh-visible: !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page;
-                        title: root.transfer-page ? "炼化／夺舍" : root.settings-page ? "系统设置" : root.messages-page ? "采集消息" : root.access-page ? (root.access-pair-status != "" ? "确认接入" : "Agent 接入") : root.recall-page ? "召回调试" : root.space-name;
-                        subtitle: root.transfer-page ? "空间迁移  /  " + root.space-id : root.settings-page ? "实例模型与检索能力" : root.messages-page ? "原始采集消息  /  " + root.space-id : root.access-page ? (root.access-pair-status != "" ? "由本机 CLI 发起 · " + root.space-id : "当前空间 · " + root.space-id) : root.recall-page ? root.space-name + "  /  " + root.space-id : "记忆概览  /  " + root.space-id;
+                        compact: root.compact; loading: root.loading; refresh-visible: root.current-page == "dashboard";
+                        title: root.skills-page ? "Skill 库" : root.transfer-page ? "炼化／夺舍" : root.settings-page ? "系统设置" : root.messages-page ? "采集消息" : root.access-page ? (root.access-pair-status != "" ? "确认接入" : "Agent 接入") : root.recall-page ? "召回调试" : root.space-name;
+                        subtitle: root.skills-page ? "空间流程  /  " + root.space-id : root.transfer-page ? "空间迁移  /  " + root.space-id : root.settings-page ? "实例模型与检索能力" : root.messages-page ? "原始采集消息  /  " + root.space-id : root.access-page ? (root.access-pair-status != "" ? "由本机 CLI 发起 · " + root.space-id : "当前空间 · " + root.space-id) : root.recall-page ? root.space-name + "  /  " + root.space-id : "记忆概览  /  " + root.space-id;
                         refresh => { root.refresh(); }
                     }
                     if root.message != "": Rectangle {
                         height: root.compact ? 68px : 48px; border-radius: 8px; background: #fcf0ed;
                         Text { x: 16px; width: parent.width - 32px; height: parent.height; text: root.message; color: #a13b33; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                     }
-                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: MemorySummary {
+                    if root.current-page == "dashboard": MemorySummary {
                         compact: root.compact; memory-count: root.memory-count; secret-summary: root.secret-summary;
                         event-count: root.event-count; pending-count: root.pending-count;
                         capture-note: root.capture-note; index-note: root.index-note;
                     }
-                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: TopicNavigation {
+                    if root.current-page == "dashboard": TopicNavigation {
                         topics: root.knowledge-topics; busy: root.knowledge-nav-busy; error: root.knowledge-nav-error; more: root.knowledge-nav-more;
                         open(id) => { root.knowledge-read(id); } refresh => { root.knowledge-refresh(); } next => { root.knowledge-nav-next(); }
                     }
-                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: KnowledgeTasks {
+                    if root.current-page == "dashboard": KnowledgeTasks {
                         automatic: root.text-jobs-automatic; enabled: root.text-jobs-enabled; busy: root.text-jobs-busy; summary: root.text-jobs-summary; detail: root.text-jobs-detail;
                         result-id: root.text-jobs-result; error: root.text-jobs-error != "" ? root.text-jobs-error : root.text-jobs-read-error;
                         refresh => { root.text-jobs-refresh(); } open(id) => { root.knowledge-read(id); }
                     }
-                    if root.extraction-jobs.length > 0 && !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: ExtractionResults {
+                    if root.extraction-jobs.length > 0 && root.current-page == "dashboard": ExtractionResults {
                         jobs: root.extraction-jobs; open(id) => { root.extraction-read(id); }
                     }
-                    if root.maintenance-jobs.length > 0 && !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: ExtractionResults {
+                    if root.maintenance-jobs.length > 0 && root.current-page == "dashboard": ExtractionResults {
                         title: "记忆维护"; description: "AI 根据使用反馈维护记忆并整理主题，证据不足时保留现状。";
                         jobs: root.maintenance-jobs; open(id) => { root.extraction-read(id); }
                     }
-                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: MemoryColumns {
+                    if root.current-page == "dashboard": MemoryColumns {
                         width: page-content.width - 2 * root.page-padding;
                         wide: root.wide; compact: root.compact; fresh: root.fresh;
                         order: root.memory-order; busy: root.loading;
@@ -710,6 +735,19 @@ export component Dashboard inherits Window {
                         open-memory(id) => { root.knowledge-read(id); }
                     }
 
+                    if root.skills-page: SkillsPage {
+                        rows: root.library-skills; compact: root.compact; busy: root.library-busy;
+                        error: root.library-error; more: root.library-next != ""; selected: root.library-selected;
+                        entry: root.library-entry; paths: root.library-paths; detail-note: root.library-detail-note;
+                        path: root.library-path; revision: root.library-revision; file-note: root.library-file-note;
+                        file-page: root.library-file-page; file-count: root.library-file-count;
+                        open-file(path) => { root.library-open-file(path); }
+                        turn-file(page) => { root.library-turn-file(page); }
+                        download => { root.library-download(); }
+                        downloading: root.library-downloading;
+                        archive(id, revision) => { root.library-archive(id, revision); }
+                        select(id) => { root.library-select(id); } load(more) => { root.library-load(more); }
+                    }
                     if root.transfer-page: TransferPage {
                         compact: root.compact; busy: root.transfer-busy; export-feedback: root.transfer-export-feedback;
                         file-name: root.transfer-file; error: root.transfer-error; notice: root.transfer-notice;
@@ -868,8 +906,8 @@ export component Dashboard inherits Window {
                         debug-open <=> root.debug-open;
                         debug-meta: root.debug-meta; debug-request: root.debug-request; debug-response: root.debug-response;
                     }
-                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page && !root.wide: StatusPanel { fresh: root.fresh; index-ok: root.index-ok; capture-note: root.capture-note; index-state: root.index-state; index-note: root.index-note; }
-                    if !root.recall-page && !root.access-page && !root.messages-page && !root.settings-page && !root.transfer-page: HorizontalLayout {
+                    if root.current-page == "dashboard" && !root.wide: StatusPanel { fresh: root.fresh; index-ok: root.index-ok; capture-note: root.capture-note; index-state: root.index-state; index-note: root.index-note; }
+                    if root.current-page == "dashboard": HorizontalLayout {
                         spacing: 12px;
                         Text { text: root.update-label; color: Theme.muted; font-size: 11px; overflow: elide; }
                         Rectangle { horizontal-stretch: 1; }

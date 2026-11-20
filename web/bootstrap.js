@@ -1,4 +1,4 @@
-import init, { receive_provider, receive_text_model, receive_knowledge, receive_transfer, receive_transfer_file, set_transfer_page, receive_model, set_settings_page, selected_text, receive_messages, set_messages_page, receive_access, receive_access_notice, hide_access_keys, resume_access, set_access_page, start, set_page, receive_snapshot, receive_recall, receive_secret, receive_secret_copy, receive_secret_verification, hide_secret, end_session, resize_viewport, restore_session } from "/web/chromie_web.js";
+import init, { receive_skills, receive_provider, receive_text_model, receive_knowledge, receive_transfer, receive_transfer_file, receive_model, selected_text, receive_messages, receive_access, receive_access_notice, hide_access_keys, resume_access, start, set_page, receive_snapshot, receive_recall, receive_secret, receive_secret_copy, receive_secret_verification, hide_secret, end_session, resize_viewport, restore_session } from "/web/chromie_web.js";
 
 let activeRequest;
 let activeRecall;
@@ -96,20 +96,22 @@ function lastSpace() {
   try { return window.localStorage.getItem("chromie.space") || savedLogin()?.space || ""; } catch { return ""; }
 }
 
+const pageTitles = {dashboard: "看板", skills: "Skill 库", recall: "召回调试", access: "接入", messages: "采集消息", settings: "系统设置", transfer: "炼化／夺舍"};
+
 function pageRoute() {
-  if (location.pathname === "/") return { space: lastSpace(), recall: false };
-  const match = location.pathname.match(/^\/spaces\/([^/]+)\/(dashboard|recall|access|messages|settings|transfer)$/);
-  if (!match) return;
-  try { return { space: decodeURIComponent(match[1]), recall: match[2] === "recall", access: match[2] === "access", messages: match[2] === "messages", settings: match[2] === "settings", transfer: match[2] === "transfer" }; } catch { /* 无效地址不复用旧空间。 */ }
+  if (location.pathname === "/") return {space: lastSpace(), page: "dashboard"};
+  const match = location.pathname.match(/^\/spaces\/([^/]+)\/([a-z]+)$/);
+  if (!match || !Object.hasOwn(pageTitles, match[2])) return;
+  try { return {space: decodeURIComponent(match[1]), page: match[2]}; } catch { /* 无效地址不复用旧空间。 */ }
 }
 
-function pageTitle(recall, access = false, messages = false, settings = false, transfer = false) {
-  document.title = transfer ? "Chromie · 炼化／夺舍" : settings ? "Chromie · 系统设置" : messages ? "Chromie · 采集消息" : access ? "Chromie · 接入" : recall ? "Chromie · 召回调试" : "Chromie · 看板";
+function pageTitle(page) {
+  document.title = "Chromie · " + pageTitles[page];
 }
 
-window.chromieNavigate = (space, recall, replace, access = false, messages = false, settings = false, transfer = false) => {
-  if (typeof space !== "string" || space.length > 32 || !/^[a-z]+(?:-[a-z]+)*$/.test(space)) return;
-  const path = `/spaces/${encodeURIComponent(space)}/${transfer ? "transfer" : settings ? "settings" : messages ? "messages" : access ? "access" : recall ? "recall" : "dashboard"}`;
+window.chromieNavigate = (space, page, replace) => {
+  if (typeof space !== "string" || space.length > 32 || !/^[a-z]+(?:-[a-z]+)*$/.test(space) || !Object.hasOwn(pageTitles, page)) return;
+  const path = `/spaces/${encodeURIComponent(space)}/${page}`;
   if (secretVerification && secretVerification.space !== space) window.chromieForgetSecretVerification();
   activeSpace = space;
   if (location.pathname !== path) {
@@ -122,7 +124,7 @@ window.chromieNavigate = (space, recall, replace, access = false, messages = fal
     if (replace) window.history.replaceState(null, "", path);
     else window.history.pushState(null, "", path);
   }
-  pageTitle(recall, access, messages, settings, transfer);
+  pageTitle(page);
 };
 
 function savedLogin() {
@@ -368,12 +370,12 @@ window.chromieOrigin = () => location.origin;
 const pairingSpace = pageRoute()?.space;
 window.chromiePairingId = () => {
   const route = pageRoute();
-  if (!route?.access || route.space !== pairingSpace) return "";
+  if (route?.page !== "access" || route.space !== pairingSpace) return "";
   return (location.search || "").match(/(?:^\?|&)pair=([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:&|$)/)?.[1] || "";
 };
 window.chromieDismissPairing = () => {
   const route = pageRoute();
-  if (route?.access) window.history.replaceState(null, "", location.pathname);
+  if (route?.page === "access") window.history.replaceState(null, "", location.pathname);
 };
 window.chromieNow = () => performance.now();
 window.chromieCancelAccess = () => {
@@ -497,6 +499,136 @@ window.chromieModelRequest = async (space, operation, payload, generation) => {
 };
 
 // 浏览器桥接仅负责文件选择、二进制下载和请求；Secret 不进入页面模型。
+// 浏览器仅通过当前空间的登录 Cookie 阅读 Skill，切换空间或收起详情即撤销旧响应。
+const skillRequests = new Map();
+let skillFile;
+const textPageSize = 8192;
+const hexPageSize = 256;
+
+// 每次只向画布交付一页。按换行或完整码点分页，下载始终复用已校验的原始字节。
+function openSkillFile(space, path, bytes) {
+  let text;
+  try {
+    const decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    if (!/[\x00-\x08\x0e-\x1f\x7f]/.test(decoded)) text = decoded;
+  } catch { /* 非 UTF-8 文件按字节查看。 */ }
+  const starts = [0];
+  if (text !== undefined) {
+    let start = 0;
+    while (start + textPageSize < text.length) {
+      let end = start + textPageSize;
+      const newline = text.slice(start, end).lastIndexOf("\n");
+      if (newline >= 0) end = start + newline + 1;
+      else if (text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
+      starts.push(end);
+      start = end;
+    }
+  }
+  return {space, path, bytes, text, starts, count: text !== undefined ? starts.length : Math.max(1, Math.ceil(bytes.length / hexPageSize))};
+}
+
+window.chromieSkillFilePage = page => {
+  const file = skillFile;
+  if (!file || pageRoute()?.page !== "skills" || pageRoute()?.space !== file.space ||
+      !Number.isInteger(page) || page < 0 || page >= file.count) return;
+  const binary = file.text === undefined;
+  let content;
+  if (binary) {
+    const start = page * hexPageSize;
+    const end = Math.min(start + hexPageSize, file.bytes.length);
+    const lines = [];
+    for (let offset = start; offset < end; offset += 16) {
+      const row = file.bytes.subarray(offset, Math.min(offset + 16, end));
+      lines.push(offset.toString(16).padStart(8, "0") + "   " + Array.from(row, byte => byte.toString(16).padStart(2, "0")).join(" "));
+    }
+    content = lines.join("\n");
+  } else {
+    content = file.text.slice(file.starts[page], file.starts[page + 1]);
+  }
+  receive_skills(file.space, "file", file.path, 200, JSON.stringify({content, binary, page, count: file.count}));
+};
+
+window.chromieDownloadSkillFile = () => {
+  const file = skillFile;
+  if (!file || pageRoute()?.page !== "skills" || pageRoute()?.space !== file.space) return;
+  saveSkillBlob(new Blob([file.bytes], {type: "application/octet-stream"}), file.path.split("/").pop());
+};
+
+function saveSkillBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+  } finally { URL.revokeObjectURL(url); }
+}
+
+window.chromieSkillArchive = async (space, id, revision) => {
+  if (pageRoute()?.page !== "skills" || pageRoute()?.space !== space ||
+      !/^[a-f0-9-]{36}$/i.test(id) || !Number.isInteger(revision) || revision < 1) return;
+  window.chromieCancelSkills("archive");
+  const controller = new AbortController();
+  skillRequests.set("archive", controller);
+  try {
+    const response = await fetch(`/spaces/${encodeURIComponent(space)}/skill-library/${encodeURIComponent(id)}/archive?revision=${revision}`, {
+      credentials: "same-origin", mode: "same-origin", redirect: "error", cache: "no-store", signal: controller.signal
+    });
+    if (response.status === 200) {
+      const name = /^attachment; filename="([a-z0-9-]+\.zip)"$/.exec(response.headers.get("content-disposition") ?? "")?.[1];
+      if (!name || response.headers.get("content-type") !== "application/zip") throw Error("无效的 Skill 下载包");
+      const blob = await response.blob();
+      if (skillRequests.get("archive") !== controller) return;
+      saveSkillBlob(blob, name);
+    }
+    if (skillRequests.get("archive") === controller) receive_skills(space, "archive", id, response.status, "");
+  } catch {
+    if (skillRequests.get("archive") === controller) receive_skills(space, "archive", id, 0, "");
+  } finally {
+    if (skillRequests.get("archive") === controller) skillRequests.delete("archive");
+  }
+};
+
+window.chromieCancelSkills = channel => {
+  if (!channel || channel === "file") skillFile = undefined;
+  for (const [name, controller] of skillRequests) {
+    if (!channel || channel === name) { skillRequests.delete(name); controller.abort(); }
+  }
+};
+window.chromieSkills = async (space, channel, value, revision = 0, path = "") => {
+  if (pageRoute()?.space !== space || pageRoute()?.page !== "skills") return;
+  const list = channel === "list";
+  const file = channel === "file";
+  if (!list && !file && channel !== "detail") return;
+  if ((!list || value) && !/^[a-f0-9-]{36}$/i.test(value)) return;
+  if (file && (!path || !Number.isInteger(revision) || revision < 1)) return;
+  window.chromieCancelSkills(channel);
+  const controller = new AbortController();
+  skillRequests.set(channel, controller);
+  let suffix = list ? (value ? "?after=" + encodeURIComponent(value) : "") : "/" + encodeURIComponent(value);
+  if (file) suffix += "/file?revision=" + revision + "&path=" + encodeURIComponent(path);
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(`/spaces/${encodeURIComponent(space)}/skill-library${suffix}`, {
+      credentials: "same-origin", mode: "same-origin", cache: "no-store", redirect: "error", signal: controller.signal
+    });
+    if (file && response.status === 200) {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (skillRequests.get(channel) !== controller) return;
+      skillFile = openSkillFile(space, path, bytes);
+      window.chromieSkillFilePage(0);
+    } else {
+      const body = file ? "" : await response.text();
+      if (skillRequests.get(channel) === controller) receive_skills(space, channel, file ? path : value, response.status, body);
+    }
+  } catch {
+    if (skillRequests.get(channel) === controller) receive_skills(space, channel, file ? path : value, 0, "");
+  } finally {
+    clearTimeout(timer);
+    if (skillRequests.get(channel) === controller) skillRequests.delete(channel);
+  }
+};
+
 let transferFile;
 let transferInput;
 let activeTransfer;
@@ -511,7 +643,7 @@ window.chromieChooseTransfer = () => {
   transferInput = input; input.type = "file"; input.accept = ".chromie,.age"; input.hidden = true;
   input.onchange = () => {
     const file = input.files?.[0];
-    if (transferInput !== input || !pageRoute()?.transfer || !file) return;
+    if (transferInput !== input || pageRoute()?.page !== "transfer" || !file) return;
     transferFile = file.size > 0 && file.size <= 65 * 1024 * 1024 ? file : undefined;
     receive_transfer_file(file.name, file.size);
     input.value = "";
@@ -630,7 +762,7 @@ window.chromieRequest = async (space, operation, password, generation, remember 
 
 document.addEventListener("visibilitychange", () => {
   if (ready && document.hidden) { hide_secret(); hide_access_keys(); window.chromieCancelSecret(); window.chromieCancelAccess(); }
-  else if (ready && pageRoute()?.access) resume_access();
+  else if (ready && pageRoute()?.page === "access") resume_access();
 });
 window.addEventListener("pagehide", () => {
   window.chromieCancelMessages();
@@ -667,8 +799,8 @@ window.addEventListener("popstate", () => {
   window.chromieCancelMessages();
   window.chromieCancelKnowledge?.();
   window.chromieCancelTextModel?.();
-  pageTitle(route.recall, route.access, route.messages, route.settings, route.transfer);
-  if (route.transfer) set_transfer_page(true); else if (route.settings) set_settings_page(true); else if (route.messages) set_messages_page(true); else if (route.access) set_access_page(true); else set_page(route.recall);
+  pageTitle(route.page);
+  set_page(route.page);
 });
 // Provider 与整理设置只走管理 Cookie；切页取消请求，Key 提交后丢弃局部载荷。
 const activeProviders = new Map();
@@ -693,8 +825,8 @@ try {
   const route = pageRoute();
   if (!route) throw new Error("页面地址无效");
   activeSpace = route.space;
-  pageTitle(route.recall, route.access, route.messages, route.settings, route.transfer);
-  start(route.space, route.recall, !!route.access, !!route.messages, !!route.settings, !!route.transfer);
+  pageTitle(route.page);
+  start(route.space, route.page);
 } catch (error) {
   // 当前 SDK 使用的 Winit 0.30 在 Web 上以此异常交接控制流；其他异常仍显示失败。
   const eventLoopHandoff = ready && error instanceof Error && error.message ===

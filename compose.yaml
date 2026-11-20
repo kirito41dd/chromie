@@ -49,8 +49,77 @@ services:
       - ./config/qdrant:/run/chromie-qdrant:ro
     restart: unless-stopped
     logging: *logging
+  rustfs-permissions:
+    image: rustfs/rustfs:1.0.6
+    user: "0:0"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "-ec", "chown 10001:10001 /data"]
+    volumes:
+      - ./data/rustfs:/data
+    restart: "no"
+    logging: *logging
+  rustfs:
+    image: rustfs/rustfs:1.0.6
+    depends_on:
+      rustfs-permissions:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export RUSTFS_SECRET_KEY="$$(cat /run/chromie/root-secret)"
+        exec rustfs /data
+    environment:
+      RUSTFS_ACCESS_KEY: chromie-storage-admin
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_OBS_LOGGER_LEVEL: warn
+    volumes:
+      - ./data/rustfs:/data
+      - ./config/rustfs:/run/chromie:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    logging: *logging
+  rustfs-init:
+    image: rustfs/rustfs:1.0.6
+    user: "0:0"
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        export HOME=/tmp
+        rc alias set store http://rustfs:9000 chromie-storage-admin "$$(cat /run/chromie/root-secret)" >/dev/null
+        if test -f /run/chromie/ready; then
+          rc bucket list store/chromie-skills >/dev/null
+        else
+          rc bucket create --ignore-existing store/chromie-skills >/dev/null
+          rc admin policy create store chromie-skills /run/chromie/policy.json >/dev/null
+          rc admin user info store chromie-app >/dev/null 2>&1 || rc admin user add store chromie-app "$$(cat /run/chromie/app-secret)" >/dev/null
+          rc admin policy attach store chromie-skills --user chromie-app >/dev/null
+        fi
+        rc alias set app http://rustfs:9000 chromie-app "$$(cat /run/chromie/app-secret)" >/dev/null
+        rc bucket list app/chromie-skills >/dev/null
+        touch /run/chromie/ready
+    volumes:
+      - ./config/rustfs:/run/chromie
+    tmpfs:
+      - /tmp
+    restart: "on-failure:5"
+    logging: *logging
   chromie:
     <<: *chromie-image
+    environment:
+      CHROMIE_S3_ENDPOINT: http://rustfs:9000
+      CHROMIE_S3_BUCKET: chromie-skills
+      CHROMIE_S3_ACCESS_KEY: chromie-app
+      CHROMIE_S3_SECRET_KEY_FILE: /config/rustfs/app-secret
     init: true
     depends_on:
       bootstrap:
@@ -59,6 +128,9 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      rustfs-init:
+        condition: service_completed_successfully
+        required: false
     ports:
       - "127.0.0.1:${CHROMIE_PORT:-8732}:8732"
     volumes:

@@ -70,6 +70,71 @@ impl MemoryMcp {
     }
 
     #[tool(
+        description = "列出当前空间的云端 Skill 目录，每页最多 10 项。根据作者的 name、description 选择流程，用 read_skill 读取选中项。next_cursor 非空时可继续翻页。",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_skills(
+        &self,
+        Parameters(q): Parameters<crate::skill_mcp::ListSkills>,
+        ctx: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        result(
+            async {
+                self.authorized_store(&ctx)
+                    .await?
+                    .skill_directory(self.space, q.cursor)
+                    .await
+            }
+            .await,
+        )
+    }
+    #[tool(
+        description = "按路径读云端 Skill，默认读 SKILL.md；后续文件带 expected_revision。版本变化请重读入口。执行沿用当前宿主授权。",
+        annotations(read_only_hint = true)
+    )]
+    async fn read_skill(
+        &self,
+        Parameters(q): Parameters<crate::skill_mcp::Read>,
+        ctx: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        result(
+            async {
+                crate::skill_mcp::read(&self.authorized_store(&ctx).await?, self.space, q).await
+            }
+            .await,
+        )
+    }
+    #[tool(
+        description = "记录 Skill 的实际使用结果。used 指实际用过的修订，corrected 指发现需要纠正的旧修订，verified 指已验证通过的修订。每个观察用独立 request_id，同一观察重试复用 ID。修订未知可省略。",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn report_skill_use(
+        &self,
+        Parameters(q): Parameters<crate::skill_mcp::Report>,
+        ctx: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        result(
+            async {
+                self.authorized_store(&ctx)
+                    .await?
+                    .skill_report(
+                        self.space,
+                        q.skill_id,
+                        q.revision,
+                        q.request_id,
+                        &q.outcome,
+                        q.reason.as_deref(),
+                    )
+                    .await
+            }
+            .await,
+        )
+    }
+    #[tool(
         description = "分页查看当前空间的简短主题导航，了解已保存哪些领域及入口；不调用模型。按需 get_memory 阅读主题，再用 get_memory_links 沿引用读取。project_key 只填已知值，返回该项目和空间通用主题。",
         annotations(read_only_hint = true, destructive_hint = false)
     )]
@@ -307,8 +372,42 @@ impl ServerHandler for MemoryMcp {
         self.negotiate_initialize(&request)
     }
 
+    async fn on_custom_request(
+        &self,
+        request: rmcp::model::CustomRequest,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CustomResult, ErrorData> {
+        let store = self
+            .authorized_store(&context)
+            .await
+            .map_err(crate::skill_mcp::protocol_error)?;
+        crate::skill_mcp::custom(&store, self.space, request).await
+    }
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        let store = self
+            .authorized_store(&context)
+            .await
+            .map_err(crate::skill_mcp::protocol_error)?;
+        crate::skill_mcp::resource(&store, self.space, &request.uri)
+            .await
+            .map_err(crate::skill_mcp::protocol_error)
+    }
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(include_str!("mcp_instructions.md"))
+        let mut caps = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build();
+        caps.extensions = Some(
+            [(
+                "io.modelcontextprotocol/skills".to_owned(),
+                Default::default(),
+            )]
+            .into(),
+        );
+        ServerConfig::new(caps).with_instructions(include_str!("mcp_instructions.md"))
     }
 }

@@ -219,6 +219,7 @@ pub(crate) fn routes(
     let data = Router::new()
         .merge(crate::system_http::routes(&prefix))
         .merge(crate::knowledge_http::routes(&prefix))
+        .merge(crate::skill_http::web_routes(&prefix))
         .merge(crate::transfer_http::routes(
             &prefix,
             guard.auth.clone(),

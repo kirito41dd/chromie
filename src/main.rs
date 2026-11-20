@@ -36,10 +36,10 @@ enum Commands {
         #[command(subcommand)]
         command: chromie::secret_cli::Command,
     },
-    /// 导出随 CLI 分发的 Chromie 使用 Skill
+    /// 使用及发布云端 Skill，或导出 Chromie 自带的使用指南
     Skill {
         #[command(subcommand)]
-        command: Skill,
+        command: chromie::cloud_skill_cli::Command,
     },
     /// 上传 hook 输入的消息，离线时进入本机队列
     Capture(PrivateConfig),
@@ -137,17 +137,7 @@ enum Hook {
     /// 为 Codex 安装或修复采集插件
     Install(HookInstall),
 }
-#[derive(Subcommand)]
-enum Skill {
-    /// 导出到指定目录，供支持 Skill 的其他 Agent 安装
-    Export {
-        #[arg(long, value_name = "目录")]
-        out: PathBuf,
-        /// 显式覆盖目标目录中不同的 Skill 文件
-        #[arg(long)]
-        replace: bool,
-    },
-}
+
 #[derive(Args)]
 struct HookInstall {
     #[command(flatten)]
@@ -173,9 +163,7 @@ struct LegacySetup {
 
 async fn run(command: Commands) -> Result<()> {
     let value = match command {
-        Commands::Skill {
-            command: Skill::Export { out, replace },
-        } => chromie::client_skills::export(&out, replace)?,
+        Commands::Skill { command } => chromie::cloud_skill_cli::run(command).await?,
         Commands::Init(args) => {
             cli_setup::run(
                 cli_setup::Action::Init,
